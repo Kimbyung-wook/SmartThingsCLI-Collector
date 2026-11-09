@@ -1,0 +1,46 @@
+[Unit]
+Description=SmartThings sensor rollup (hourly aggregation)
+
+[Service]
+Type=oneshot
+User=stcollector
+Group=stcollector
+WorkingDirectory=/opt/stcollector
+Environment=PYTHONPATH=/opt/stcollector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml rollup
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=256M
+
+StateDirectory=stcollector
+StateDirectoryMode=0700
+UMask=0077
+
+# 집계에는 네트워크가 필요 없다
+PrivateNetwork=true
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+# ---- 보안 제한 ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=

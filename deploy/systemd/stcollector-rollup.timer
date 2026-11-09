@@ -1,0 +1,11 @@
+[Unit]
+Description=Run sensor rollup every hour
+
+[Timer]
+OnCalendar=*:02
+AccuracySec=30s
+# RPi가 꺼져 있던 동안 놓친 실행은 켜진 뒤 한 번 실행한다
+Persistent=true
+
+[Install]
+WantedBy=timers.target

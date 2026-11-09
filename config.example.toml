@@ -1,0 +1,111 @@
+# stcollector 설정 예시
+# RPi에서는 /etc/stcollector/config.toml 로 복사된다 (권한 640, root:stcollector).
+# 대시보드 비밀번호 해시 같은 값이 들어가므로 이 파일을 Git이나 클라우드에 올리지 마세요.
+
+[smartthings]
+# 수집 방식: "cli" 또는 "oauth". 이 줄을 지우면 코드 기본값인 "oauth" 로 동작한다.
+backend = "cli"
+# SmartThings CLI 실행 파일 (deploy/install.sh 가 설치)
+cli_path = "/opt/stcollector-cli/smartthings"
+# CLI 프로세스의 HOME. 자격증명이 이 아래 .local/share/@smartthings/cli/credentials.json 에 있다.
+cli_home = "/var/lib/stcollector/cli"
+# CLI 호출 1회의 제한 시간(초)
+cli_timeout_s = 120
+# 비우면 위치가 1개일 때 자동 선택
+location_id = ""
+
+# ---- backend = "oauth" 일 때만 사용 ----
+# OAuth-In 앱을 만들고 관리하려면 유료 SmartThings Developer Plan 이 필요하다.
+# 가입했다면 `smartthings smartapps:create` 로 앱을 만들고 아래 주석을 풀어 값을 넣는다.
+# client_id = ""
+# client_secret = ""
+# 앱 등록 때 넣은 리다이렉트 URI와 똑같아야 한다.
+# https://localhost/... 를 쓰면 인가 코드가 제3자 서버를 거치지 않는다 (페이지는 안 열려도 됨).
+# redirect_uri = "https://localhost/callback"
+# OAuth 방식에서는 읽기 권한만 받는다. CLI 방식의 권한은 controller:stCli 로 읽기 전용이 아니다.
+# scopes = ["r:devices:*", "r:locations:*"]
+# 기본값을 바꿀 일은 거의 없다
+# api_base  = "https://api.smartthings.com/v1"
+# auth_url  = "https://api.smartthings.com/oauth/authorize"
+# token_url = "https://api.smartthings.com/oauth/token"
+
+[paths]
+db = "/var/lib/stcollector/sensors.db"
+# backend = "oauth" 일 때만 쓰는 토큰 파일
+token = "/var/lib/stcollector/token.json"
+
+[collect]
+# auto: 이벤트 이력 API가 되면 history, 안 되면 status
+mode = "auto"
+# history 방식: 몇 초마다 새 이벤트를 가져올지 (데이터 촘촘함과는 무관, 반영 지연만 결정)
+history_interval_s = 300
+history_page_limit = 200
+history_max_pages = 20
+history_backfill_max_pages = 100
+# 처음 실행할 때 과거 며칠치 이력을 가져올지 (SmartThings 보관 기간 이내에서만 가능)
+backfill_days = 7
+# 기기 목록·방 정보 갱신 주기
+device_refresh_s = 86400
+
+# status 방식일 때 capability별 조회 주기(초). M1 보고 간격 리포트를 보고 조정한다.
+[collect.status_interval_s]
+temperatureMeasurement = 300
+relativeHumidityMeasurement = 300
+illuminanceMeasurement = 60
+motionSensor = 30
+presenceSensor = 30
+switch = 60
+powerMeter = 60
+energyMeter = 900
+battery = 21600
+
+# 수집할 capability -> 속성
+[collect.attributes]
+temperatureMeasurement = ["temperature"]
+relativeHumidityMeasurement = ["humidity"]
+illuminanceMeasurement = ["illuminance"]
+motionSensor = ["motion"]
+presenceSensor = ["presence"]
+switch = ["switch"]
+powerMeter = ["power"]
+energyMeter = ["energy"]
+battery = ["battery"]
+
+[log]
+level = "INFO"
+
+[rollup]
+# 원본(readings) 보관 일수. 0이면 지우지 않는다. 집계 결과는 지우지 않는다.
+retention_days = 365
+
+# 다음 보고가 없을 때 값을 최대 몇 초까지 유지된 것으로 볼지.
+# 이 시간을 넘긴 구간은 "데이터 없음"(낮은 coverage)이 된다.
+# M1의 `stcollector intervals` 결과를 보고 센서 보고 주기보다 넉넉하게 맞춘다.
+[rollup.max_hold_s]
+temperature = 7200
+humidity = 7200
+illuminance = 7200
+power = 7200
+energy = 21600
+motion = 604800
+presence = 604800
+switch = 31536000
+
+[web]
+# 집 안 네트워크의 스마트폰·PC에서 접속한다
+host = "0.0.0.0"
+port = 8080
+# `stcollector hash-password` 로 만든 값. 비어 있으면 웹서버가 시작을 거부한다.
+password_hash = ""
+# 허용할 접속 대역 (127.0.0.1 은 항상 허용). 방화벽에 더한 2차 방어선이다.
+allowed_networks = ["192.168.0.0/24"]
+session_days = 30
+
+[sysmon]
+# RPi 상태 모니터. sysfs 와 /proc 만 읽고, 수집 DB 와 분리된 sysmon.db 에 저장한다.
+interval_s = 5
+# 1분 요약을 몇 초마다 저장할지. 전압 부족 같은 이벤트는 바로 저장한다.
+flush_s = 600
+minute_retention_days = 14
+event_retention_days = 365
+overheat_c = 80.0

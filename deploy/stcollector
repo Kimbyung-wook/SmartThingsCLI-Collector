@@ -1,0 +1,10 @@
+#!/bin/sh
+# stcollector CLI 래퍼. 항상 stcollector 계정으로 실행해서 토큰·DB 파일 소유자를 유지한다.
+#   stcollector auth | check | intervals [--days N]
+set -eu
+if [ "$(id -un)" != "stcollector" ]; then
+    exec sudo -u stcollector -- "$0" "$@"
+fi
+cd /opt/stcollector
+export PYTHONPATH=/opt/stcollector
+exec /usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml "$@"

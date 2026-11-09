@@ -1,0 +1,60 @@
+[Unit]
+Description=Raspberry Pi status monitor (sysfs and /proc only)
+
+[Service]
+Type=simple
+User=stcollector
+Group=stcollector
+WorkingDirectory=/opt/stcollector
+Environment=PYTHONPATH=/opt/stcollector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml sysmon
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+Nice=5
+IOSchedulingClass=idle
+MemoryMax=48M
+
+# 쓸 수 있는 곳은 자기 저장 폴더와 tmpfs 의 현재값 파일뿐이다.
+StateDirectory=stcollector/sysmon
+StateDirectoryMode=0700
+RuntimeDirectory=stcollector-sysmon
+RuntimeDirectoryMode=0700
+UMask=0077
+
+# 모니터에는 필요 없는 자격증명 폴더를 가린다.
+InaccessiblePaths=-/var/lib/stcollector/cli -/var/lib/stcollector/token.json
+
+# 네트워크가 필요 없다
+PrivateNetwork=true
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+# 다른 프로세스의 CPU 시간을 읽어야 해서 다른 서비스의 ProtectProc=invisible 만 완화한다.
+ProtectProc=default
+
+# ---- 보안 제한 ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,53 @@
+[Unit]
+Description=SmartThings sensor collector (local only)
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=stcollector
+Group=stcollector
+WorkingDirectory=/opt/stcollector
+# -P: 현재 디렉터리를 import 경로에서 제외 (모듈 바꿔치기 방지)
+Environment=PYTHONPATH=/opt/stcollector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml run
+Restart=on-failure
+RestartSec=30
+
+# DB·토큰·CLI 자격증명 저장 위치 (/var/lib/stcollector, 권한 700)
+# ProtectSystem=strict 아래에서 이 폴더만 쓸 수 있다. cli_home(/var/lib/stcollector/cli)도 이 안에
+# 있어서 ReadWritePaths 는 따로 두지 않는다. cli_home 을 이 폴더 밖으로 옮기면 ReadWritePaths 가 필요하다.
+StateDirectory=stcollector
+StateDirectoryMode=0700
+UMask=0077
+
+# ---- 보안 제한 ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# SmartThings CLI 는 Node 기반 단일 실행 파일이고, V8 JIT 는 메모리에 실행 권한을 주어야 한다.
+# 이 옵션을 켜면 그 호출이 막혀 CLI 가 동작하지 않으므로 이 서비스에서만 끈다. 이 서비스의 유일한 완화 항목이다.
+# (backend = "oauth" 로만 쓴다면 true 로 되돌려도 된다. CLI 를 쓰지 않는 web, rollup 은 true 를 유지한다.)
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

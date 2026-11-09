@@ -1,0 +1,6 @@
+#!/bin/sh
+# 헤드리스 RPi용: 브라우저 대신 주소만 출력한다 (SmartThings CLI 로그인용).
+# install.sh 가 /opt/stcollector-cli/login-bin/xdg-open 으로 설치한다.
+# 로그인할 때만 PATH 앞에 넣는다. 수집 서비스는 이 스크립트를 쓰지 않는다.
+echo "PC 브라우저에서 여세요 (SSH 터널 필요): $1" >&2
+exit 0

@@ -1,0 +1,53 @@
+[Unit]
+Description=SmartThings sensor dashboard (home network only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=stcollector
+Group=stcollector
+WorkingDirectory=/opt/stcollector
+Environment=PYTHONPATH=/opt/stcollector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml web
+Restart=on-failure
+RestartSec=30
+# 비밀번호 미설정 등 설정 오류(종료 코드 2)는 재시작해도 소용없다
+RestartPreventExitStatus=2
+
+StateDirectory=stcollector
+StateDirectoryMode=0700
+UMask=0077
+MemoryMax=128M
+
+# 집 안 네트워크와만 통신한다. 대역이 바뀌면 여기와 config.toml 의 allowed_networks 를 함께 고친다.
+IPAddressDeny=any
+IPAddressAllow=192.168.0.0/24 127.0.0.0/8 ::1
+
+# ---- 보안 제한 ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
