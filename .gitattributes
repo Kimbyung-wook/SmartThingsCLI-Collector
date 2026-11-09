@@ -1,0 +1,12 @@
+# RPi에서 실행되는 파일은 항상 LF 줄바꿈
+*.sh text eol=lf
+*.service text eol=lf
+deploy/stcollector text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.sql text eol=lf
+*.timer text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.webmanifest text eol=lf

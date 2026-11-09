@@ -1,0 +1,10 @@
+# 비밀값·데이터는 절대 커밋하지 않는다
+config.toml
+token.json
+*.db
+*.db-wal
+*.db-shm
+*.lock
+data/
+__pycache__/
+*.pyc
