@@ -34,8 +34,7 @@ STALE_COLLECT_MS = 30 * 60 * 1000
 STALE_ROLLUP_MS = 2 * HOUR_MS + 10 * 60 * 1000
 LOW_BATTERY = 20
 LOW_DISK_BYTES = 1024**3
-SYSMON_BUCKET_MS = 5 * 60 * 1000
-SYSMON_BUCKETS = 288
+SYSMON_PERIODS = {"24h": (5 * 60 * 1000, 288), "1h": (60 * 1000, 60)}  # (구간 ms, 구간 수)
 SYSMON_STALE_MS = 30_000
 SYSMON_EVENT_LIMIT = 100
 SYSMON_ALERT_KINDS = {
@@ -704,8 +703,11 @@ def _mean(values: list):
 
 def system(ctx: Context, params: dict) -> dict:
     now = ctx.now_ms
-    end = now - now % SYSMON_BUCKET_MS + SYSMON_BUCKET_MS
-    start = end - SYSMON_BUCKETS * SYSMON_BUCKET_MS
+    period = _choice(params, "period", SYSMON_PERIODS, "24h")
+    bucket_ms, bucket_count = SYSMON_PERIODS[period]
+    # 1시간 보기는 끝난 분까지만 쓴다. 진행 중인 분은 아직 1분 요약이 없어 끝이 늘 비기 때문이다.
+    end = now - now % bucket_ms + (bucket_ms if period == "24h" else 0)
+    start = end - bucket_count * bucket_ms
     current = _sysmon_current(ctx)
     minutes, events, has_db = _sysmon_rows(ctx, start)
 
@@ -715,10 +717,10 @@ def system(ctx: Context, params: dict) -> dict:
             by_minute[p["ts_ms"]] = (p["ts_ms"], p.get("temp_avg"), p.get("temp_min"), p.get("temp_max"),
                                      p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0))
 
-    groups: list[list[tuple]] = [[] for _ in range(SYSMON_BUCKETS)]
+    groups: list[list[tuple]] = [[] for _ in range(bucket_count)]
     for ts, row in by_minute.items():
-        i = (ts - start) // SYSMON_BUCKET_MS
-        if 0 <= i < SYSMON_BUCKETS:
+        i = (ts - start) // bucket_ms
+        if 0 <= i < bucket_count:
             groups[i].append(row)
 
     def column(index, fn, digits):
@@ -728,9 +730,9 @@ def system(ctx: Context, params: dict) -> dict:
             out.append(_r(fn(values), digits) if values else None)
         return out
 
-    per_bucket_minutes = SYSMON_BUCKET_MS // 60000
+    per_bucket_minutes = bucket_ms // 60000
     series = {
-        "buckets": [start + i * SYSMON_BUCKET_MS for i in range(SYSMON_BUCKETS)],
+        "buckets": [start + i * bucket_ms for i in range(bucket_count)],
         "temp_avg": column(1, _mean, 1), "temp_min": column(2, min, 1), "temp_max": column(3, max, 1),
         "freq": column(4, _mean, 0), "load": column(5, _mean, 2),
         "undervolt_s": [sum(r[6] or 0 for r in rows) for rows in groups],

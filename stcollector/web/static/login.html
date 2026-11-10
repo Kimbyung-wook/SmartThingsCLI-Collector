@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>로그인 · 우리집 센서</title>
-<meta name="theme-color" content="#256abf">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fcfcfb">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a19">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" href="/static/icons/icon-192.png">
@@ -13,12 +14,12 @@
 <body class="login-body">
 <main class="login">
   <h1>우리집 센서</h1>
-  <p class="sub">집 안 네트워크 전용 대시보드입니다.</p>
+  <p class="sub">집 안 네트워크 전용</p>
   <!--MESSAGE-->
   <form method="post" action="/login">
     <label for="password">비밀번호</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-    <button class="primary" type="submit">들어가기</button>
+    <button class="primary" type="submit">로그인</button>
   </form>
 </main>
 </body>

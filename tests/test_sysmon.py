@@ -383,6 +383,19 @@ class SystemApiTests(TempDirMixin, unittest.TestCase):
         self.assertIn(60.0, d["series"]["temp_max"])
         self.assertEqual(d["events"][0]["procs"][0]["name"], "smartthings")
 
+    def test_one_hour_period_uses_finished_minutes(self):
+        self.start()
+        status, body = self.get("/api/system?period=1h")
+        self.assertEqual(status, 200)
+        q = json.loads(body)["series"]
+        self.assertEqual(len(q["buckets"]), 60)
+        self.assertEqual(q["buckets"][1] - q["buckets"][0], 60_000)
+        self.assertLess(q["buckets"][-1], int(__import__("time").time() * 1000) - 59_000)
+        self.assertEqual(sum(q["undervolt_s"]), 10)
+        self.assertIn(57.0, q["temp_max"])
+        self.assertNotIn(60.0, q["temp_max"])  # 진행 중인 분은 넣지 않는다
+        self.assertEqual(self.get("/api/system?period=2h")[0], 400)
+
     def test_active_warning_appears_in_banner(self):
         self.start()
         alerts = json.loads(self.get("/api/meta")[1])["alerts"]

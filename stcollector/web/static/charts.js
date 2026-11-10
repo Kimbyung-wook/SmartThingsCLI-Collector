@@ -16,7 +16,7 @@
     el.textContent = text;
     return el;
   }
-  function color(c) { return c == null ? 'var(--other)' : 'var(--s' + (c + 1) + ')'; }
+  function color(c) { return c == null ? 'var(--other)' : c === 'ink' ? 'var(--ink2)' : 'var(--s' + (c + 1) + ')'; }
 
   // ---- 툴팁 ------------------------------------------------------------------
   const active = new Set();
@@ -228,7 +228,7 @@
   }
 
   // ---- 세로 막대 ----------------------------------------------------------------
-  /* o: {labels, title(i), values, unit, digits, color, aria} */
+  /* o: {labels, title(i), values, unit, digits, aria}. 마지막 구간만 강조색 */
   function bars(host, o) { mount(host, () => drawBars(host, o)); }
 
   function drawBars(host, o) {
@@ -253,7 +253,7 @@
       if (!v) return null;
       const x = X(i), y = Y(v), b = M.t + ih, r = Math.min(4, bw / 2, b - y);
       const d = `M${x} ${b}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + bw - r}Q${x + bw} ${y} ${x + bw} ${y + r}V${b}Z`;
-      const p = s('path', { d }, svg); p.style.fill = o.color || 'var(--s1)';
+      const p = s('path', { d }, svg); p.style.fill = i === n - 1 ? 'var(--accent)' : 'var(--hbar)';
       return p;
     });
     host.appendChild(svg);
@@ -280,16 +280,18 @@
   }
 
   // ---- 히트맵 -------------------------------------------------------------------
-  let ramp = null;
+  let ramps = null;
   function hexRgb(h) { h = h.trim().replace('#', ''); return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16)); }
-  function resetTheme() { ramp = null; }
-  function rampColor(t) {
-    if (!ramp) {
-      const st = getComputedStyle(document.documentElement);
-      ramp = [hexRgb(st.getPropertyValue('--lo')), hexRgb(st.getPropertyValue('--hi'))];
+  function resetTheme() { ramps = null; }
+  /* kind 'lux' 는 조도 전용 전구색, 생략하면 기본 색 */
+  function rampColor(t, kind) {
+    if (!ramps) {
+      const st = getComputedStyle(document.documentElement), read = n => hexRgb(st.getPropertyValue(n));
+      ramps = { base: [read('--lo'), read('--hi')], lux: [read('--lux0'), read('--lux1'), read('--lux2')] };
     }
-    t = clamp(t, 0, 1);
-    return 'rgb(' + [0, 1, 2].map(i => Math.round(ramp[0][i] + (ramp[1][i] - ramp[0][i]) * t)).join(',') + ')';
+    const stops = ramps[kind || 'base'], p = clamp(t, 0, 1) * (stops.length - 1);
+    const i = Math.min(stops.length - 2, Math.floor(p)), f = p - i;
+    return 'rgb(' + [0, 1, 2].map(k => Math.round(stops[i][k] + (stops[i + 1][k] - stops[i][k]) * f)).join(',') + ')';
   }
 
   /* o: {rows, cols, L, ch(W), rowEvery(r), colEvery, fill(r,c)->css|null, tip(r,c)->{title, rows}, aria} */

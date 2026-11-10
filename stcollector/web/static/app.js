@@ -30,7 +30,7 @@
   const md = t => { const d = kst(t); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); };
   const hh = t => kst(t).getUTCHours();
   const hm = t => pad(kst(t).getUTCHours()) + ':' + pad(kst(t).getUTCMinutes());
-  const stamp = t => (t == null ? '—' : md(t) + ' ' + hm(t));
+  const stamp = t => (t == null ? '—' : pad(kst(t).getUTCMonth() + 1) + '/' + pad(kst(t).getUTCDate()) + ' ' + hm(t));
   function ago(t) {
     if (t == null) return '—';
     const m = Math.max(0, Math.round((Date.now() - t) / 6e4));
@@ -62,7 +62,7 @@
 
   // ---- 공용 조각 ------------------------------------------------------------------
   const S = { tab: 'summary', metric: 'temperature', period: '24h', room: 'all', luxRoom: null, luxScope: 'all', luxPeriod: 'month',
-    occRoom: null, occPeriod: 'month', plugPeriod: 'month' };
+    occRoom: null, occPeriod: 'month', plugPeriod: 'month', sysPeriod: '24h' };
   const TABS = [['summary', '요약'], ['trend', '추세'], ['lux', '조도 분포'], ['occ', '재실'], ['plug', '플러그'], ['status', '상태']];
   const METRICS = [['temperature', '온도'], ['humidity', '습도'], ['illuminance', '조도'], ['dewpoint', '이슬점']];
   const PERIODS = [['24h', '24시간 · 시간별'], ['month', '1개월 · 일별'], ['year', '1년 · 주별']];
@@ -74,7 +74,7 @@
         onclick: () => { S[key] = v; render(); } })));
   }
   function empty(title, detail) { return h('div', { class: 'empty' }, h('b', { text: title }), h('span', { text: detail })); }
-  function stat(label, value, sub) { return h('div', { class: 'stat' }, h('span', { text: label }), h('b', { text: value }), sub && h('small', { text: sub })); }
+  function stat(label, value, sub, cls) { return h('div', { class: 'stat' + (cls ? ' ' + cls : '') }, h('span', { text: label }), h('b', { text: value }), sub && h('small', { text: sub })); }
   function section(title, sub) { return h('section', { class: 'sec' }, h('div', null, h('h2', { text: title }), sub && h('p', { class: 'sub', text: sub }))); }
   function legendLine(c, text) { const k = h('i', { class: 'sw' }); k.style.background = c; return h('span', null, k, text); }
   function legendBox(c, text) { const k = h('i', { class: 'swb' }); k.style.background = c; return h('span', null, k, text); }
@@ -95,13 +95,13 @@
     return d;
   }
   function chartHost() { return h('div', { class: 'chart' }); }
-  function ramp(lo, hi) {
+  function ramp(lo, hi, kind) {
     const bar = h('i');
-    bar.style.background = 'linear-gradient(90deg,' + rampColor(0) + ',' + rampColor(1) + ')';
+    bar.style.background = 'linear-gradient(90deg,' + [0, 0.5, 1].map(t => rampColor(t, kind)).join(',') + ')';
     return h('div', { class: 'ramp' }, h('span', { text: lo }), bar, h('span', { text: hi }));
   }
   function pendingNote() {
-    return empty('아직 표시할 데이터가 없습니다', '수집이 시작되고 첫 집계(매시 2분)가 끝나면 여기에 표시됩니다.');
+    return empty('아직 데이터 없음', '첫 집계(매시 2분)가 끝나면 표시');
   }
   /* DOM에 붙인 뒤에 차트를 그린다 (폭 측정) */
   const afterMount = [];
@@ -114,25 +114,41 @@
       ...summaryMetrics.map(([metric]) => api('/api/series', { metric, period: '24h' }))]);
     if (!d.has_data) return [pendingNote()];
 
-    // 항목마다 차트 하나, 방은 범례로 구분한다. 범례에는 현재값을 함께 적는다.
-    const sections = summaryMetrics.map(([metric, label], k) => {
+    // 방별 현재값. 스와치 색이 아래 차트의 선 색과 같다.
+    const now = (cur, digits) => (cur && cur.now != null ? fmt(cur.now, digits) : '—');
+    const roomCard = r => {
+      const swatch = h('i', { class: 'sw' });
+      swatch.style.background = color(r.color);
+      return h('div', { class: 'room' },
+        h('div', { class: 'room-head' },
+          h('span', { class: 'room-name' }, swatch, h('span', { text: r.name })),
+          r.occupancy == null ? null : h('span', { class: 'pill' + (r.occupancy.occupied ? ' on' : '') }, h('i'), r.occupancy.occupied ? '재실' : '비어 있음')),
+        h('div', { class: 'room-temp' }, now(r.temperature, 1), h('small', { text: '°C' })),
+        h('div', { class: 'room-sub' },
+          h('span', { text: '습도 ' + now(r.humidity, 0) + '%' }),
+          h('span', { class: 'room-lux', text: now(r.illuminance, 0) + ' lx' })));
+    };
+    const measured = d.rooms.filter(r => r.temperature || r.humidity || r.illuminance || r.occupancy != null);
+    const strip = measured.length ? h('div', { class: 'rooms' }, measured.map(roomCard)) : null;
+
+    // 온도를 크게, 습도와 조도는 작게 그린다.
+    const plot = ([metric, label], k, big) => {
       const c = charts[k], rs = c.series.filter(x => x.avg.some(v => v != null));
       const log = metric === 'illuminance';
-      const sec = section(label, log ? '세로축은 로그 눈금입니다.' : null);
-      if (!rs.length) { sec.append(empty('아직 집계된 값이 없습니다', '매시 2분에 갱신됩니다.')); return sec; }
-      const nowText = r => {
-        const card = d.rooms.find(x => x.name === r.name), cur = card && card[metric];
-        return cur ? `${r.name} ${fmt(cur.now, c.digits)} ${c.unit}` : r.name;
-      };
+      const sec = section(label, big ? '최근 24시간 · 시간별 평균' : log ? '최근 24시간 · 세로축 로그 눈금' : '최근 24시간');
+      if (!rs.length) { sec.append(empty('아직 집계된 값 없음', '매시 2분 갱신')); return sec; }
       const host = chartHost();
       later(() => Charts.line(host, {
         n: c.buckets.length, x: i => bucketX(c.buckets[i], c.grain), tip: i => bucketTip(c.buckets[i], c.grain),
         series: rs, band: false, log, unit: c.unit, digits: c.digits, directLabels: rs.length > 1,
-        height: W => (W < 520 ? 190 : 230), aria: `최근 24시간 방별 ${label} 차트. 추세 화면에서 표로 볼 수 있습니다.`,
+        height: big ? (W => (W < 520 ? 220 : 300)) : (W => (W < 520 ? 170 : 200)),
+        aria: `최근 24시간 방별 ${label} 차트. 추세 화면에서 표로 볼 수 있습니다.`,
       }));
-      sec.append(h('div', { class: 'legend' }, rs.map(r => legendLine(color(r.color), nowText(r)))), host);
+      sec.append(host);
       return sec;
-    });
+    };
+    const main = plot(summaryMetrics[0], 0, true);
+    const small = h('div', { class: 'grid2' }, summaryMetrics.slice(1).map((m, i) => plot(m, i + 1, false)));
 
     const range = (cur, digits) => (cur && cur.today_min != null ? `${fmt(cur.today_min, digits)}~${fmt(cur.today_max, digits)}` : '—');
     const state = table(['방', '재실', '이슬점 °C', '오늘 온도 °C', '오늘 습도 %', '오늘 조도 lx'], d.rooms.map(r => [
@@ -144,8 +160,8 @@
     ]), i => i >= 2);
     const stateSec = section('방별 상태');
     stateSec.append(state);
-    return [...sections, stateSec,
-      h('p', { class: 'sub', text: '차트는 최근 24시간의 시간별 평균입니다.' + (d.closed_until ? ` ${stamp(d.closed_until)}까지 집계되었고 매시 2분에 갱신됩니다.` : '') })];
+    return [strip, main, small, stateSec,
+      d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
   }
 
   // ---- 추세 -----------------------------------------------------------------------
@@ -207,7 +223,7 @@
         ...(cmp ? rs.map(r => fmt(r.avg[i], digits)) : band ? [fmt(rs[0].avg[i], digits), fmt(rs[0].max[i], digits), fmt(rs[0].min[i], digits)] : [fmt(rs[0].avg[i], digits)])]),
       i => i > 0));
     return [controls, stats, legend, host, tv,
-      S.period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계된 값입니다. 매시 2분에 갱신됩니다.` }) : null];
+      S.period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
   }
 
   // ---- 조도 분포 -------------------------------------------------------------------
@@ -255,9 +271,9 @@
     const stats = h('div', { class: 'stats' },
       stat('기간 평균', fmt(d.avg) + ' lx'),
       stat('최대 / 최소', fmt(d.max) + ' / ' + fmt(d.min, 1)),
-      stat('가장 오래 머문 구간', bins[d.mode_bin] + ' lx', '전체의 ' + fmt(d.totals_hours[d.mode_bin] / d.total_hours * 100) + '%'),
+      stat('가장 오래 머문 구간', bins[d.mode_bin] + ' lx', '전체의 ' + fmt(d.totals_hours[d.mode_bin] / d.total_hours * 100) + '%', 'lux'),
       stat('시간의 80%가 속한 범위', binRangeText(bins, d.range80)));
-    const histSec = section('조도 구간별 머문 시간', '가장 오래 머문 구간은 진한 색, 80% 범위는 배경으로 표시합니다.');
+    const histSec = section('조도 구간별 머문 시간');
     histSec.append(histLegend(), histogram(d), histTable(d));
 
     const hours = Array.from({ length: 24 }, (_, i) => i + '시');
@@ -266,12 +282,12 @@
     const binHost = chartHost();
     later(() => Charts.heat(binHost, {
       rows: rowsDesc, cols: hours, L: 62, colEvery: 3, ch: W => (W < 520 ? 17 : 21), rowEvery: () => true,
-      fill: (r, c) => { const v = d.matrix[12 - r][c]; return v > 0 ? rampColor(Math.sqrt(v / peak)) : 'var(--cell0)'; },
+      fill: (r, c) => { const v = d.matrix[12 - r][c]; return v > 0 ? rampColor(Math.sqrt(v / peak), 'lux') : 'var(--cell0)'; },
       tip: (r, c) => ({ title: `${c}시 · ${rowsDesc[r]} lx`, rows: [{ key: '머문 시간', value: fmt(d.matrix[12 - r][c], 1) + '시간' }] }),
       aria: '시각과 조도 구간별 머문 시간 히트맵. 값은 아래 표로도 볼 수 있습니다.',
     }));
-    const binSec = section('시각 × 조도 구간', '어느 시간대에 어떤 밝기가 많은지 보여 줍니다. 진할수록 오래 머문 구간입니다.');
-    binSec.append(ramp('짧음', '김'), binHost, tableView(() => table(['조도 (lx)', ...hours], rowsDesc.map((b, r) => [b, ...hours.map((_, c) => fmt(d.matrix[12 - r][c], 1))]), i => i > 0)));
+    const binSec = section('시각 × 조도 구간', '어느 시간대에 어떤 밝기가 많은지');
+    binSec.append(ramp('짧음', '김', 'lux'), binHost, tableView(() => table(['조도 (lx)', ...hours], rowsDesc.map((b, r) => [b, ...hours.map((_, c) => fmt(d.matrix[12 - r][c], 1))]), i => i > 0)));
 
     const colLabels = d.date_columns.map(t => md(t));
     let top = 0; d.dates.forEach(col => col.forEach(v => { if (v != null) top = Math.max(top, v); }));
@@ -279,12 +295,12 @@
     const dateHost = chartHost();
     later(() => Charts.heat(dateHost, {
       rows: hours, cols: colLabels, L: 38, colEvery: S.luxPeriod === 'week' ? 1 : 5, ch: W => (W < 520 ? 12 : 14), rowEvery: r => r % 3 === 0,
-      fill: (r, c) => { const v = d.dates[c][r]; return v == null ? null : rampColor(Math.log10(1 + v) / logTop); },
+      fill: (r, c) => { const v = d.dates[c][r]; return v == null ? null : rampColor(Math.log10(1 + v) / logTop, 'lux'); },
       tip: (r, c) => ({ title: `${colLabels[c]}${d.date_grain === 'week' ? ' 시작 주' : ''} ${r}시`, rows: [{ key: '평균', value: d.dates[c][r] == null ? '데이터 없음' : fmt(d.dates[c][r]) + ' lx' }] }),
       aria: '날짜와 시각별 평균 조도 히트맵. 값은 아래 표로도 볼 수 있습니다.',
     }));
-    const dateSec = section('날짜 × 시각 평균 조도', d.date_grain === 'week' ? '1년을 주 단위로 묶어 보여 줍니다. 색은 로그 눈금입니다.' : '색은 로그 눈금입니다.');
-    const key = h('div', { class: 'legend' }, ramp('0 lx', fmt(top) + ' lx'), h('span', null, h('i', { class: 'nodata' }), '데이터 없음'));
+    const dateSec = section('날짜 × 시각 평균 조도', d.date_grain === 'week' ? '주 단위 · 색은 로그 눈금' : '색은 로그 눈금');
+    const key = h('div', { class: 'legend' }, ramp('0 lx', fmt(top) + ' lx', 'lux'), h('span', null, h('i', { class: 'nodata' }), '데이터 없음'));
     dateSec.append(key, dateHost, tableView(() => table(['시각', ...colLabels], hours.map((x, r) => [x, ...colLabels.map((_, c) => fmt(d.dates[c][r]))]), i => i > 0)));
     return [controls, stats, histSec, binSec, dateSec];
   }
@@ -314,7 +330,7 @@
     const heatSec = section('요일 × 시각 재실 비율');
     heatSec.append(ramp('0%', '100%'), host, tableView(() => table(['요일', ...hours], WD.map((x, r) => [x, ...hours.map((_, c) => dev.matrix[r][c] == null ? '—' : fmt(dev.matrix[r][c] * 100))]), i => i > 0)));
     const out = [controls, stats, heatSec];
-    const luxSec = section('재실 중 조도 분포', '보조등 기준값을 정할 때 참고하세요. 같은 방의 조도 센서로 계산합니다.');
+    const luxSec = section('재실 중 조도 분포', '같은 방의 조도 센서 기준 · 보조등 기준값을 정할 때 참고');
     if (dev.lux_device) {
       const period = S.occPeriod === 'month' ? 'month' : 'year';
       const lux = await api('/api/lux-dist', { device: dev.lux_device, period, scope: 'occupied' });
@@ -323,10 +339,10 @@
           stat('재실 중 가장 많은 구간', lux.bins[lux.mode_bin] + ' lx', fmt(lux.totals_hours[lux.mode_bin] / lux.total_hours * 100) + '%'),
           stat('재실 시간의 80% 범위', binRangeText(lux.bins, lux.range80))), histLegend(), histogram(lux), histTable(lux));
       } else {
-        luxSec.append(empty('재실 중 조도 데이터가 없습니다', '이 기간에 재실과 조도가 함께 기록된 시간이 없습니다.'));
+        luxSec.append(empty('재실 중 조도 데이터 없음', '이 기간에 재실과 조도가 함께 기록된 시간 없음'));
       }
     } else {
-      luxSec.append(empty('같은 방에 조도 센서가 없습니다', 'SmartThings에서 재실 센서와 조도 센서를 같은 방에 지정하면 계산됩니다.'));
+      luxSec.append(empty('같은 방에 조도 센서 없음', 'SmartThings에서 재실 센서와 조도 센서를 같은 방에 지정하면 계산'));
     }
     out.push(luxSec);
     return out;
@@ -350,12 +366,12 @@
         labels: d.buckets.map(b => bucketX(b, d.grain)), title: i => bucketTip(d.buckets[i], d.grain),
         values: d.total_kwh, unit: 'kWh', digits: 2, aria: '기간별 전력량 합계 막대 차트. 값은 아래 표로도 볼 수 있습니다.',
       }));
-      const sec = section(d.grain === 'day' ? '일별 전력량 합계' : '월별 전력량 합계', '측정을 지원하는 플러그만 합산합니다.');
+      const sec = section(d.grain === 'day' ? '일별 전력량 합계' : '월별 전력량 합계', '측정 지원 플러그만 합산');
       sec.append(host, tableView(() => table(['구간', 'kWh'], d.buckets.map((b, i) => [bucketTip(b, d.grain), fmt(d.total_kwh[i], 2)]), i => i > 0)));
       out.push(sec);
     }
     const maxKwh = Math.max.apply(null, metered.map(p => p.kwh_total).concat([0.001]));
-    const listSec = section('플러그별', '전력량이 많은 순서입니다. 켜진 시간은 기간 합계입니다.');
+    const listSec = section('플러그별', '전력량 순 · 켜진 시간은 기간 합계');
     listSec.append(table(['플러그', '상태', '지금', '오늘 켜진 시간', '기간 켜진 시간', 'kWh', ''], d.plugs.map(p => {
       const bar = h('div', { class: 'kbar' }); bar.style.width = ((p.kwh_total || 0) / maxKwh * 100) + '%';
       return [p.room ? `${p.name} · ${p.room}` : p.name,
@@ -371,6 +387,7 @@
 
   // ---- 상태 -----------------------------------------------------------------------
   const GB = 1024 ** 3;
+  const SYS_PERIODS = [['1h', '1시간 · 1분별'], ['24h', '24시간 · 5분별']];
   function statusPill(text, kind) { return h('span', { class: 'pill' + (kind ? ' ' + kind : '') }, h('i'), text); }
   const EVENT_LABELS = { undervoltage: '전압 부족', throttled: '스로틀링', freq_capped: '클럭 제한', soft_temp: '온도 제한', overheat: '과열', boot: '부팅' };
   function duration(sec) {
@@ -384,21 +401,25 @@
     const state = e.kind === 'boot' ? '' : e.end == null ? '진행 중' : e.interrupted ? '끝 시각 모름 (재시작)' : duration(e.seconds);
     const body = h('div', { class: 'body' });
     if (e.kind === 'boot') {
-      body.append(h('p', { class: 'sub', text: '이 시각에 Raspberry Pi가 켜졌습니다. 직전 프로세스 기록은 없습니다.' }));
+      body.append(h('p', { class: 'sub', text: 'Raspberry Pi 부팅 · 직전 프로세스 기록 없음' }));
     } else {
       const at = [e.temp_c != null ? fmt(e.temp_c, 1) + '°C' : null, e.freq_mhz != null ? fmt(e.freq_mhz) + ' MHz' : null, e.load1 != null ? 'load ' + fmt(e.load1, 2) : null].filter(Boolean).join(' · ');
       if (at) body.append(h('p', { class: 'sub', text: '시작할 때: ' + at }));
       body.append(e.procs.length ? table(['직전 60초 프로세스', 'CPU 초', '점유율'], e.procs.map(p => [p.name, fmt(p.cpu_s, 1), fmt(p.pct, 1) + '%']), i => i > 0)
-        : h('p', { class: 'sub', text: '직전 프로세스 기록이 없습니다.' }));
+        : h('p', { class: 'sub', text: '직전 프로세스 기록 없음' }));
     }
     return h('details', { class: 'event' },
-      h('summary', null, statusPill(label, kind), h('span', { class: 'when', text: stamp(e.start) }), state ? h('span', { class: 'when', text: state }) : null),
+      h('summary', null,  // 표시 / 시각 / 문제 / 기간. 값이 없어도 칸을 유지해 열을 맞춘다
+        h('span', { class: 'pill' + (kind ? ' ' + kind : '') }, h('i')),
+        h('span', { class: 'when', text: stamp(e.start) }),
+        h('span', { text: label }),
+        h('span', { class: 'when', text: state })),
       body);
   }
   function systemSections(sys) {
-    const head = section('Raspberry Pi', '5초마다 읽은 값입니다.');
+    const head = section('Raspberry Pi', '5초 간격');
     if (!sys || !sys.available) {
-      head.append(empty('시스템 기록이 아직 없습니다', 'stcollector-sysmon 서비스가 실행되면 여기에 표시됩니다.'));
+      head.append(empty('시스템 기록 없음', 'stcollector-sysmon 서비스가 실행되면 표시'));
       return [head];
     }
     const c = sys.current, out = [head];
@@ -415,18 +436,22 @@
       const pills = [c.undervoltage === true ? statusPill('전압 부족', 'bad') : c.undervoltage === false ? statusPill('전압 정상', 'on') : statusPill('전압 읽기 불가', 'warn')];
       (c.active || []).filter(k => k !== 'undervoltage').forEach(k => pills.push(statusPill(EVENT_LABELS[k] || k, k === 'overheat' ? 'bad' : 'warn')));
       head.append(h('div', { class: 'legend' }, pills));
-      if (!caps.throttle_bits) head.append(h('p', { class: 'sub', text: '이 기기에서는 전압 부족만 읽을 수 있습니다. 스로틀링 여부는 표시되지 않습니다.' }));
-      if (c.stale) head.append(h('p', { class: 'sub', text: `현재값 갱신이 멈췄습니다 (마지막 ${stamp(c.ts_ms)}). 서비스 상태를 확인하세요.` }));
+      if (!caps.throttle_bits) head.append(h('p', { class: 'sub', text: '이 기기는 전압 부족만 읽을 수 있어 스로틀링은 표시 안 됨' }));
+      if (c.stale) head.append(h('p', { class: 'sub', text: `현재값 갱신 멈춤 (마지막 ${stamp(c.ts_ms)}) · 서비스 상태 확인 필요` }));
       if (c.top && c.top.length) {
         const top = section('최근 60초 CPU 사용 프로세스');
         top.append(table(['프로세스', 'CPU 초', '점유율'], c.top.map(p => [p.name, fmt(p.cpu_s, 1), fmt(p.pct, 1) + '%']), i => i > 0));
         out.push(top);
       }
     } else {
-      head.append(h('p', { class: 'sub', text: '현재값 파일이 없습니다. 모니터가 멈췄거나 재부팅 직후일 수 있습니다.' }));
+      head.append(h('p', { class: 'sub', text: '현재값 파일 없음 · 모니터 중단 또는 재부팅 직후' }));
     }
 
     const q = sys.series, n = q.buckets.length;
+    const oneHour = S.sysPeriod === '1h', periodLabel = oneHour ? '최근 1시간' : '최근 24시간';
+    const charts = section(periodLabel, (oneHour ? '1분' : '5분') + ' 평균 · 온도의 띠는 최대~최소');
+    charts.append(h('div', { class: 'controls' }, seg('sysPeriod', SYS_PERIODS, '기간')));
+    out.push(charts);
     if (q.temp_avg.some(v => v != null)) {
       const uv = q.undervolt_s;
       const key = uv.some(v => v > 0) ? h('div', { class: 'legend' }, legendBox('var(--shade)', '전압 부족 구간')) : null;
@@ -434,28 +459,29 @@
         extra: i => (uv[i] > 0 ? [{ key: '전압 부족', value: uv[i] + '초' }] : []), height: W => (W < 520 ? 150 : 180) };
       const chart = (title, label, avg, opts) => {
         const sec = section(title), host = chartHost();
-        const se = { name: label, color: 0, avg, coverage: q.coverage, min: opts.min || null, max: opts.max || null };
-        later(() => Charts.line(host, { ...base, series: [se], band: !!opts.min, unit: opts.unit, digits: opts.digits, domain: opts.domain, aria: `최근 24시간 ${title} 차트. 값은 아래 표로도 볼 수 있습니다.` }));
+        const se = { name: label, color: 'ink', avg, coverage: q.coverage, min: opts.min || null, max: opts.max || null };
+        later(() => Charts.line(host, { ...base, series: [se], band: !!opts.min, unit: opts.unit, digits: opts.digits, domain: opts.domain, aria: `${periodLabel} ${title} 차트. 값은 아래 표로도 볼 수 있습니다.` }));
         sec.append(host);
         return sec;
       };
       const loadTop = Math.max(1, ...q.load.filter(v => v != null));
-      const charts = section('최근 24시간', '5분 평균입니다. 온도의 띠는 최대~최소입니다.');
       if (key) charts.append(key);
-      out.push(charts,
+      out.push(
         chart('CPU 온도', '온도', q.temp_avg, { min: q.temp_min, max: q.temp_max, unit: '°C', digits: 1 }),
         chart('클럭', '클럭', q.freq, { unit: 'MHz', digits: 0 }),
         chart('load', 'load', q.load, { unit: '', digits: 2, domain: [0, loadTop] }),
         tableView(() => table(['시각', '온도 °C', '클럭 MHz', 'load', '전압 부족 초'],
           q.buckets.map((b, i) => [stamp(b), fmt(q.temp_avg[i], 1), fmt(q.freq[i]), fmt(q.load[i], 2), uv[i]]).filter((_, i) => q.coverage[i] != null), i => i > 0)));
+    } else {
+      charts.append(empty('이 기간 기록 없음', '모니터가 기록을 남기면 표시'));
     }
-    const log = section('이벤트 로그', '행을 누르면 시작 직전 60초의 프로세스를 볼 수 있습니다.');
-    log.append(sys.events.length ? h('div', { class: 'events' }, sys.events.map(eventRow)) : h('p', { class: 'sub', text: '기록된 이벤트가 없습니다.' }));
+    const log = section('이벤트 로그', '행을 누르면 시작 직전 60초의 프로세스 표시');
+    log.append(sys.events.length ? h('div', { class: 'events' }, sys.events.map(eventRow)) : h('p', { class: 'sub', text: '기록된 이벤트 없음' }));
     out.push(log);
     return out;
   }
   async function vStatus() {
-    const [d, sys] = await Promise.all([api('/api/status'), api('/api/system').catch(e => { if (e.message === 'login') throw e; return null; })]);
+    const [d, sys] = await Promise.all([api('/api/status'), api('/api/system', { period: S.sysPeriod }).catch(e => { if (e.message === 'login') throw e; return null; })]);
     const token = d.auth_state === 'reauth_required' ? statusPill('재인증 필요', 'bad')
       : d.auth_state === 'ok' ? statusPill('정상', 'on') : '수집 시작 전';
     const rows = [
@@ -469,14 +495,14 @@
       ['최근 수집 오류', d.last_error_ms ? `${stamp(d.last_error_ms)}: ${d.last_error || ''}` : '없음'],
     ];
     const main = table(['항목', '값'], rows);
-    const gaps = section('수집 공백', '최근 14일 동안 온습도·조도 센서가 모두 조용했던 시간입니다.');
+    const gaps = section('수집 공백', '최근 14일, 온습도·조도 센서가 모두 조용했던 시간');
     gaps.append(d.gaps.length ? table(['시작', '끝', '길이'], d.gaps.map(g => [stamp(g.start), stamp(g.end), g.hours + '시간']), i => i === 2)
-      : h('p', { class: 'sub', text: d.closed_until ? '최근 14일 동안 공백이 없습니다.' : '집계가 시작되면 표시됩니다.' }));
+      : h('p', { class: 'sub', text: d.closed_until ? '최근 14일 공백 없음' : '집계가 시작되면 표시' }));
     const sensors = section('센서별 마지막 보고');
     const low = b => b != null && b < 20;
     sensors.append(d.devices.length ? table(['기기', '방', '마지막 보고', '배터리'], d.devices.map(x => [x.name, x.room || '—', `${stamp(x.last_ms)} (${ago(x.last_ms)})`,
       x.battery == null ? '—' : low(x.battery) ? statusPill(`${fmt(x.battery)}% 교체 권장`, 'warn') : fmt(x.battery) + '%']), i => i === 3)
-      : h('p', { class: 'sub', text: '아직 보고한 센서가 없습니다.' }));
+      : h('p', { class: 'sub', text: '아직 보고한 센서 없음' }));
     return [...systemSections(sys), section('수집'), main, gaps, sensors];
   }
 
@@ -492,7 +518,7 @@
       nodes = await VIEWS[S.tab]();
     } catch (e) {
       if (e.message === 'login') return;
-      nodes = [empty('데이터를 불러오지 못했습니다', '잠시 후 다시 시도해 주세요.')];
+      nodes = [empty('데이터를 불러오지 못했습니다', '잠시 후 다시 시도해 주세요')];
     }
     if (me !== token) return;
     view.replaceChildren(...nodes.filter(Boolean));
@@ -523,7 +549,7 @@
   async function loadMeta() {
     meta = await api('/api/meta');
     $('footer').textContent = `stcollector ${meta.version}`;
-    $('alerts').replaceChildren(...meta.alerts.map(a => h('div', { class: 'alert' + (a.level === 'critical' ? ' critical' : '') }, warnIcon(), h('span', { text: (a.level === 'critical' ? '위험: ' : '주의: ') + a.text }))));
+    $('alerts').replaceChildren(...meta.alerts.map(a => h('div', { class: 'alert' + (a.level === 'critical' ? ' critical' : '') }, warnIcon(), h('span', { text: (a.level === 'critical' ? '위험: ' : '') + a.text }))));
   }
   function tick() {
     const d = kst(Date.now());
