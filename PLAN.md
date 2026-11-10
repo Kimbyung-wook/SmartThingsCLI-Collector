@@ -49,7 +49,7 @@
 | 본체 | **Raspberry Pi 3 B+ (RAM 1GB) — 확보함.** 수집기 용도로 충분. 대시보드 체감 속도는 M3에서 실측 |
 | 저장장치 | **microSD 32GB — 확보함.** 용량은 충분(원본 최악 연 1GB), 쓰기 수명과 정전 손상이 약점. 고내구성(High Endurance) 카드 권장, journald 용량 제한으로 보완, USB 메모리 자동 백업은 M5에서 구현 예정(미구현) |
 | 전원 | 5V 2.5A 이상 정격 어댑터. 전압 부족 시 SD카드 손상 위험 증가. 시험 결과는 [docs/POWER_TEST.md](docs/POWER_TEST.md) |
-| 운영 설정 | Bluetooth·Wi-Fi 끔(`dtoverlay=disable-bt`, `dtoverlay=disable-wifi`), `arm_freq=900`, `maxcpus=1`. DZ5V3A와 QC5V(15cm 케이블)로 각각 약 12분 시험한 결과이므로 다른 어댑터나 케이블에 그대로 적용 불가. 전압 상태는 운영 중에 `vcgencmd get_throttled`로 확인 |
+| 운영 설정 | Bluetooth·Wi-Fi 끔(`dtoverlay=disable-bt`, `dtoverlay=disable-wifi`), `arm_freq=900`, `maxcpus=1`. DZ5V3A, QC5V(25cm 케이블), QC5V(15cm 케이블)로 각각 약 12분 시험한 결과이므로 다른 어댑터나 케이블에 그대로 적용 불가. 전압 상태는 운영 중에 `vcgencmd get_throttled`로 확인 |
 | 접속 | 모니터·키보드 없이 이더넷 + SSH로 운영 ([README M0](README.md#m0-준비)) |
 | 백업 디스크 | 별도 USB 메모리나 SSD 1개 (본체 디스크와 분리). 자동 백업은 M5 미구현 |
 | OS | Raspberry Pi OS Lite 64-bit (화면 없이 운영). 현재 RPi는 Debian 13, Python 3.13 |
