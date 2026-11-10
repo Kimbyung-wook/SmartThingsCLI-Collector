@@ -68,6 +68,26 @@
   const PERIODS = [['24h', '24시간 · 시간별'], ['month', '1개월 · 일별'], ['year', '1년 · 주별']];
   let meta = null;
 
+  // 요약 탭 구성. 브라우저별로 저장한다 (서버에는 쓰지 않음).
+  const SUMMARY_BLOCKS = [['rooms', '방별 현재값'], ['temperature', '온도 차트'], ['humidity', '습도 차트'],
+    ['illuminance', '조도 차트'], ['state', '방별 상태 표']];
+  const LAYOUT_KEY = 'summaryLayout';
+  const defaultLayout = () => SUMMARY_BLOCKS.map(([id]) => ({ id, on: true }));
+  function loadLayout() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY)); } catch (e) { /* 저장 불가 또는 손상 */ }
+    const known = new Set(SUMMARY_BLOCKS.map(b => b[0])), seen = new Set(), out = [];
+    (Array.isArray(saved) ? saved : []).forEach(x => {
+      if (x && known.has(x.id) && !seen.has(x.id)) { seen.add(x.id); out.push({ id: x.id, on: x.on !== false }); }
+    });
+    defaultLayout().forEach(x => { if (!seen.has(x.id)) out.push(x); });
+    return out;
+  }
+  function saveLayout() {
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) { /* 무시 */ }
+  }
+  let layout = loadLayout();
+
   function seg(key, options, label) {
     return h('div', { class: 'seg', role: 'group', 'aria-label': label },
       options.map(([v, t]) => h('button', { type: 'button', 'aria-pressed': String(S[key] === v), text: t,
@@ -109,7 +129,10 @@
 
   // ---- 요약 -----------------------------------------------------------------------
   async function vSummary() {
-    const summaryMetrics = METRICS.filter(m => m[0] !== 'dewpoint');
+    const shown = layout.filter(x => x.on).map(x => x.id);
+    if (!shown.length) return [empty('표시할 항목 없음', '오른쪽 위 설정에서 항목을 고르세요')];
+    // 숨긴 차트는 요청하지 않는다 (RPi 부하)
+    const summaryMetrics = METRICS.filter(m => shown.includes(m[0]));
     const [d, ...charts] = await Promise.all([api('/api/summary'),
       ...summaryMetrics.map(([metric]) => api('/api/series', { metric, period: '24h' }))]);
     if (!d.has_data) return [pendingNote()];
@@ -131,11 +154,11 @@
     const measured = d.rooms.filter(r => r.temperature || r.humidity || r.illuminance || r.occupancy != null);
     const strip = measured.length ? h('div', { class: 'rooms' }, measured.map(roomCard)) : null;
 
-    // 온도를 크게, 습도와 조도는 작게 그린다.
-    const plot = ([metric, label], k, big) => {
-      const c = charts[k], rs = c.series.filter(x => x.avg.some(v => v != null));
+    // 첫 차트를 크게, 이어지는 차트는 작게 그린다.
+    const plot = ([metric, label], big) => {
+      const c = charts[summaryMetrics.findIndex(m => m[0] === metric)], rs = c.series.filter(x => x.avg.some(v => v != null));
       const log = metric === 'illuminance';
-      const sec = section(label, big ? '최근 24시간 · 시간별 평균' : log ? '최근 24시간 · 세로축 로그 눈금' : '최근 24시간');
+      const sec = section(label, log ? '최근 24시간 · 세로축 로그 눈금' : big ? '최근 24시간 · 시간별 평균' : '최근 24시간');
       if (!rs.length) { sec.append(empty('아직 집계된 값 없음', '매시 2분 갱신')); return sec; }
       const host = chartHost();
       later(() => Charts.line(host, {
@@ -147,8 +170,6 @@
       sec.append(host);
       return sec;
     };
-    const main = plot(summaryMetrics[0], 0, true);
-    const small = h('div', { class: 'grid2' }, summaryMetrics.slice(1).map((m, i) => plot(m, i + 1, false)));
 
     const range = (cur, digits) => (cur && cur.today_min != null ? `${fmt(cur.today_min, digits)}~${fmt(cur.today_max, digits)}` : '—');
     const state = table(['방', '재실', '이슬점 °C', '오늘 온도 °C', '오늘 습도 %', '오늘 조도 lx'], d.rooms.map(r => [
@@ -160,8 +181,19 @@
     ]), i => i >= 2);
     const stateSec = section('방별 상태');
     stateSec.append(state);
-    return [strip, main, small, stateSec,
-      d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
+
+    // 설정 순서대로 쌓는다. 차트가 아닌 항목이 끼면 작은 차트 묶음을 끊는다.
+    const nodes = [];
+    let bigDone = false, group = null;
+    shown.forEach(id => {
+      const metric = summaryMetrics.find(m => m[0] === id);
+      if (!metric) { group = null; nodes.push(id === 'rooms' ? strip : stateSec); return; }
+      if (!bigDone) { bigDone = true; nodes.push(plot(metric, true)); return; }
+      if (!group) { group = h('div', { class: 'grid2' }); nodes.push(group); }
+      group.append(plot(metric, false));
+    });
+    nodes.push(d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null);
+    return nodes;
   }
 
   // ---- 추세 -----------------------------------------------------------------------
@@ -563,14 +595,74 @@
   function applyTheme() {
     if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', theme);
-    $('theme').textContent = THEMES.find(t => t[0] === theme)[1];
     Charts.resetTheme();
   }
-  $('theme').addEventListener('click', () => {
-    theme = THEMES[(THEMES.findIndex(t => t[0] === theme) + 1) % 3][0];
-    try { localStorage.setItem('theme', theme); } catch (e) { /* 무시 */ }
-    applyTheme(); render();
-  });
+
+  // ---- 설정 창 --------------------------------------------------------------------
+  const dialog = $('settings-dialog');
+  let dirtyTheme = false, dirtyLayout = false;
+  function changeLayout(next, focus) {
+    layout = next;
+    dirtyLayout = true;
+    saveLayout();
+    renderSettings(focus);
+  }
+  function layoutRow(item, i) {
+    const label = SUMMARY_BLOCKS.find(b => b[0] === item.id)[1];
+    const move = (dir, word) => {
+      const j = i + dir, edge = j < 0 || j >= layout.length;
+      return h('button', { type: 'button', class: 'ghost', text: word, disabled: edge ? '' : null, 'aria-label': `${label} ${word}로`,
+        'data-move': item.id + ':' + dir,
+        onclick: () => {
+          const next = layout.slice();
+          [next[i], next[j]] = [next[j], next[i]];
+          changeLayout(next, item.id + ':' + dir);
+        } });
+    };
+    return h('li', null,
+      h('label', null,
+        h('input', { type: 'checkbox', checked: item.on ? '' : null,
+          onchange: e => changeLayout(layout.map(x => (x.id === item.id ? { id: x.id, on: e.target.checked } : x))) }),
+        h('span', { text: label })),
+      h('div', { class: 'move' }, move(-1, '위'), move(1, '아래')));
+  }
+  function renderSettings(focus) {
+    dialog.replaceChildren(h('div', { class: 'settings-body' },
+      h('h2', { id: 'settings-title', text: '화면 설정' }),
+      h('div', { class: 'sec' },
+        h('h3', { text: '화면 모드' }),
+        h('div', { class: 'seg', role: 'group', 'aria-label': '화면 모드' }, THEMES.map(([v, t]) => h('button', {
+          type: 'button', 'aria-pressed': String(theme === v), text: t,
+          onclick: () => {
+            theme = v;
+            dirtyTheme = true;
+            try { localStorage.setItem('theme', theme); } catch (e) { /* 무시 */ }
+            applyTheme();
+            renderSettings();
+          } })))),
+      h('div', { class: 'sec' },
+        h('h3', { text: '요약 탭 항목' }),
+        h('p', { class: 'sub', text: '위에서부터 이 순서로 표시합니다. 이 브라우저에만 저장됩니다.' }),
+        h('ol', { class: 'layout-list' }, layout.map(layoutRow))),
+      h('div', { class: 'settings-foot' },
+        h('button', { type: 'button', class: 'ghost', text: '요약 항목 기본값으로', onclick: () => changeLayout(defaultLayout()) }),
+        h('button', { type: 'button', class: 'primary', text: '닫기', onclick: closeSettings }))));
+    if (focus) {
+      const b = dialog.querySelector(`[data-move="${focus}"]`);
+      if (b && !b.disabled) b.focus();
+      else dialog.querySelector(`[data-move^="${focus.split(':')[0]}:"]:not([disabled])`).focus();
+    }
+  }
+  $('settings').addEventListener('click', () => { renderSettings(); dialog.showModal(); });
+  // 닫을 때 한 번만 다시 그린다 (RPi API 호출 수 절약). Esc는 close 이벤트로 들어온다.
+  function applySettings() {
+    if (dirtyTheme || (dirtyLayout && S.tab === 'summary')) render();
+    dirtyTheme = dirtyLayout = false;
+  }
+  function closeSettings() { dialog.close(); applySettings(); }
+  dialog.addEventListener('click', e => { if (e.target === dialog) closeSettings(); });
+  dialog.addEventListener('close', applySettings);
+
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (theme === 'auto') { Charts.resetTheme(); render(); }
   });

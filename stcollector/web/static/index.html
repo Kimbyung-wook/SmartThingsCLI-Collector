@@ -19,7 +19,7 @@
   <header class="appbar">
     <div class="brand"><b>우리집 센서</b><small id="clock"></small></div>
     <div class="actions">
-      <button id="theme" class="ghost" type="button" title="화면 모드 바꾸기">자동</button>
+      <button id="settings" class="ghost" type="button">설정</button>
       <form method="post" action="/logout"><button class="ghost" type="submit">로그아웃</button></form>
     </div>
   </header>
@@ -28,6 +28,7 @@
   <main id="view" class="view"></main>
   <footer id="footer" class="footer"></footer>
 </div>
+<dialog id="settings-dialog" class="settings" aria-labelledby="settings-title"></dialog>
 <div id="loading-note" class="loading">불러오는 중…</div>
 <script src="/static/charts.js"></script>
 <script src="/static/app.js"></script>
