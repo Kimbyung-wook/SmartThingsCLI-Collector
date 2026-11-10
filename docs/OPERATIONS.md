@@ -6,14 +6,14 @@
 
 ## 일상 점검
 
-- 1차 확인: 대시보드의 **상태** 탭과 상단 경고
-- 표시 항목: 수집 중단, 재인증 필요, 집계 지연, 디스크 부족, 배터리 부족
-- 표시 조건: [ARCHITECTURE](ARCHITECTURE.md#웹-web)
+- 먼저 볼 곳: 대시보드의 상태 탭과 상단 경고
+- 경고 항목: 수집 중단, 재인증 필요, 집계 지연, 디스크 부족, 배터리 부족, 전압 부족, 스로틀링, 과열
+- 경고 조건: [ARCHITECTURE](ARCHITECTURE.md#웹-web)
 
 ### 서비스
 
 ```bash
-systemctl status stcollector stcollector-web --no-pager
+systemctl status stcollector stcollector-web stcollector-sysmon --no-pager
 ```
 
 ```bash
@@ -21,8 +21,7 @@ systemctl list-timers stcollector-rollup.timer --no-pager
 ```
 
 - **수집 서비스가 active여도 수집이 멈췄을 수 있음**
-- 로그인 만료 시 프로세스가 끝나지 않고 5분마다 재시도
-- 아래 수집 상태까지 확인 필요
+- 로그인이 만료돼도 프로세스는 끝나지 않고 5분마다 재시도하므로 아래 수집 상태까지 확인
 
 ### 로그
 
@@ -36,6 +35,10 @@ journalctl -u stcollector-web -n 20 --no-pager
 
 ```bash
 journalctl -u stcollector-rollup -n 20 --no-pager
+```
+
+```bash
+journalctl -u stcollector-sysmon -n 20 --no-pager
 ```
 
 ### 수집 상태
@@ -62,7 +65,9 @@ vcgencmd get_throttled
 | 비트 18 (`0x40000`) | 부팅 후 스로틀링이 있었음 |
 
 - 0이 아닐 때: [POWER_TEST](POWER_TEST.md) 참고
-- 최종 운영 설정(BT·Wi-Fi 끔, 900MHz, 1코어): DZ5V3A와 QC5V(15cm 케이블)로 각각 약 12분만 시험, 장시간 안정성은 이 값으로 계속 확인
+- 운영 설정: QC5V + 15cm 케이블, BT·Wi-Fi 끔, 900MHz, 1코어
+- 시험 범위: DZ5V3A와 QC5V(15cm 케이블)로 각각 약 12분. 장시간 안정성은 이 값으로 계속 확인
+- 지난 기록: 상태 탭의 이벤트 로그에 전압 부족 시작 시각과 직전 60초의 프로세스 표시
 - `nproc`이 `1`: 1코어 설정 적용 상태
 
 ### 디스크
@@ -89,17 +94,30 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
 - `--full` 사용 시점: 처음 한 번이나 집계 규칙을 바꾼 뒤에만
 - `--full` 부담: 원본이 쌓일수록 오래 걸리고 microSD 쓰기 증가
 
+### 명령 목록
+
+| 명령 | 용도 |
+|---|---|
+| `stcollector check` | 기기 목록과 이벤트 이력 점검 |
+| `stcollector run` | 수집 루프. systemd 서비스용 |
+| `stcollector rollup` | 집계 |
+| `stcollector web` | 대시보드 서버. systemd 서비스용 |
+| `stcollector sysmon` | RPi 상태 모니터. systemd 서비스용 |
+| `stcollector intervals` | 센서별 보고 간격 리포트 |
+| `stcollector hash-password` | 대시보드 비밀번호 해시 생성 |
+| `stcollector auth` | OAuth 방식 승인. CLI 방식에서는 안내문만 출력 |
+
 ### 설정 바꾸기
 
 ```bash
 sudo nano /etc/stcollector/config.toml
 ```
 
-- 수집과 웹: 시작할 때 설정을 읽으므로 재시작 필요
+- 수집, 웹, 모니터: 시작할 때 설정을 읽으므로 재시작 필요
 - 집계: 실행할 때마다 설정을 읽음
 
 ```bash
-sudo systemctl restart stcollector stcollector-web
+sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 ```
 
 - `max_hold_s` 조정: `stcollector intervals --days 7`로 센서별 보고 간격을 측정한 뒤 `[rollup.max_hold_s]` 변경
@@ -117,17 +135,18 @@ sudo systemctl restart stcollector stcollector-web
 | 경고나 로그에 `재인증 필요`, `auth_state = reauth_required` | CLI 재로그인 절차 진행. 경고 문구와 로그는 `stcollector auth`를 안내하지만 CLI 방식에서 이 명령은 안내문만 출력. OAuth 방식이면 `stcollector auth` 실행 |
 | `SmartThings CLI 로그인 정보가 없습니다` | 자격증명 파일 없음. CLI 로그인 절차나 `deploy/migrate-cli-credentials.sh` 실행 |
 | CLI를 실행하지 못함 | `sudo ./deploy/install.sh` 재실행, 설정의 `cli_path`가 `/opt/stcollector-cli/smartthings`인지 확인. 이 파일은 `stcollector` 계정으로만 실행 가능 |
-| `stcollector check`는 되는데 서비스에서만 CLI가 실패 | 샌드박스 문제. check는 systemd 밖에서 동작. 먼저 `RestrictAddressFamilies`에 `AF_NETLINK`가 없는 점을 의심. 아래 절 참고. RPi 미확인 |
+| `stcollector check`는 되는데 서비스에서만 CLI가 실패 | 샌드박스 문제. check는 systemd 밖에서 동작. 현재 배포에서는 발생하지 않음. 먼저 `RestrictAddressFamilies`에 `AF_NETLINK`가 없는 점을 의심. 아래 절 참고 |
 | CLI 호출 시간 초과 | 네트워크 확인, `cli_timeout_s`(기본 120초) 증가. 900MHz 1코어에서 1회 호출은 약 6초 |
-| `이력이 최신순이 아니어서 페이지를 이어 갈 수 없습니다` | CLI 출력 순서가 코드의 가정과 다름. `stcollector check`의 `정렬:` 줄 확인 후 코드 수정 필요 |
-| `위치 이력 N페이지 한도에 도달` | 오래 멈춘 뒤 밀린 이벤트가 많은 경우. `history_backfill_max_pages` 증가 가능. 그 사이 이벤트는 받지 못했을 수 있음 |
+| `위치 이력 N페이지 한도에 도달` | 오래 멈춘 뒤 밀린 이벤트가 많은 경우. 나머지는 다음 주기에 이어서 수신. 더 빨리 받으려면 `history_max_pages` 증가 |
 | 이벤트 이력 API 403/404 | `mode = "auto"`면 상태 조회 방식으로 자동 전환. CLI 방식의 상태 조회는 `history_interval_s`보다 자주 읽지 않음 |
 | `위치가 N개입니다` | `stcollector check` 출력에 나온 ID를 설정의 `location_id`에 입력. 이 오류가 나면 수집 서비스는 30초마다 재시작 |
 | `다른 수집기가 이미 실행 중입니다` | 수집기를 직접 실행했는데 서비스가 돌고 있거나, 수동 집계가 타이머와 겹친 경우. 집계에서도 같은 문구 출력. 잠시 뒤 재실행 |
 | `stcollector check`의 종료 코드 | 2는 설정 오류, 3은 인증 필요, 4는 API 오류 |
 
-### 샌드박스 안에서 CLI가 실패할 때 (RPi 미확인)
+### 샌드박스 안에서 CLI가 실패할 때
 
+- 현재 배포: 샌드박스 안 CLI 정상 동작 확인. 아래는 CLI 교체 뒤 다시 실패할 때의 절차
+- 아래 재정의 절차: RPi 미확인
 - 원인 후보: `stcollector.service`의 `RestrictAddressFamilies`에 `AF_NETLINK` 없음. CLI가 네트워크 인터페이스를 조회하면 실패 가능
 
 1. 시험용 재정의 파일 생성
@@ -182,17 +201,19 @@ sudo systemctl restart stcollector stcollector-web
 
 ## RPi 미확인 항목
 
-- 상태: PC 단위 테스트는 통과, RPi에서는 미시험
-- 첫 배포 때 위에서부터 확인
+- 기준: 2026-11-10 01:15 KST 배포 후
+- 배포로 확인된 항목
+  - `install.sh`, `migrate-cli-credentials.sh` 실제 실행
+  - 서비스 샌드박스 안 CLI 동작 (기기 25개, 수집 방식 `history`)
+  - PC에서 `http://<RPi IP>:8080` 응답
 
 | 항목 | 확인 방법 |
 |---|---|
-| `install.sh`, `migrate-cli-credentials.sh` 실제 실행 (문법 검사만 함) | [README M1](../README.md#m1-설치와-수집-시작-rpi) 순서대로 실행 |
-| CLI 실제 출력과 `cli_client.py` 파싱, 페이징 대조 | `stcollector check`, 수집 후 `meta.mode`와 건수 |
-| systemd 샌드박스 아래 CLI 동작 (`MemoryDenyWriteExecute=false`만으로 충분한지, `AF_NETLINK`) | `sudo systemctl start stcollector` 후 로그 |
-| CLI 액세스 토큰 자동 갱신, 리프레시 토큰 유효기간 | [README 확인 절차](../README.md#확인되지-않은-사항-cli-토큰-자동-갱신) |
+| CLI 액세스 토큰 자동 갱신(만료 2026-11-11 00:06 KST), 리프레시 토큰 유효기간 | [README 확인 절차](../README.md#확인되지-않은-사항-cli-토큰-자동-갱신) |
+| 만료 시 재인증 출력 | 만료 뒤 `auth_state`와 `journalctl -u stcollector` |
+| 스마트폰 로그인 | 같은 공유기에 연결된 스마트폰에서 `http://<RPi IP>:8080` 접속 |
 | `smartthings logout` 동작 | 재로그인 때 확인 |
 | CLI 자체 로그의 크기와 microSD 쓰기량 | 위 [디스크](#디스크) 명령 |
-| 실제 데이터로 집계와 대시보드, RPi 응답 속도 | M2~M4 완료 기준 ([PLAN §11](../PLAN.md#11-단계별-진행)) |
+| 실제 데이터로 본 대시보드와 첫 집계, RPi 응답 속도 | M2~M4 완료 기준 ([PLAN §11](../PLAN.md#11-단계별-진행)) |
 | 수집 부하까지 포함한 장시간 전압 상태 | `vcgencmd get_throttled` |
 | [MIGRATION](MIGRATION.md)의 복구 절차 | 복구 또는 M5 복원 시험 때 확인 |

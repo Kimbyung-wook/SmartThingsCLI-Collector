@@ -1,7 +1,5 @@
 # 문서 지도
 
-- 목적: 상황에 맞는 문서 하나만 열도록 구분
-
 ## 상황별 문서
 
 | 지금 하려는 일 | 볼 문서 |
@@ -26,17 +24,18 @@
 
 ## 현재 상태
 
-- 수집 방식 기준: `backend = "cli"`
-- OAuth 방식: 유료 Developer Plan이 필요해 선택지로만 유지
-- 수집 코드의 CLI 전환과 배포 스크립트: PC 테스트까지 완료, RPi에는 아직 미배포
-- RPi의 `~/stcollector-src`와 `/opt/stcollector`: 예전 M1 코드가 남아 있음
-- CLI 실행 파일과 자격증명: 로그인한 계정의 홈에 있어 서비스 계정으로 이전 필요
-- 대시보드와 집계: 구현 완료, 실제 데이터로는 미확인
+- 배포: 2026-11-10 01:15 KST 완료
+- 활성화, 부팅 시 자동 시작: `stcollector`, `stcollector-web`, `stcollector-sysmon`, `stcollector-rollup.timer`
+- 수집 방식: `backend = "cli"`. OAuth는 유료 Developer Plan이 필요해 선택지로만 유지
+- CLI 실행 파일: `/opt/stcollector-cli/smartthings`
+- CLI 자격증명: `/var/lib/stcollector/cli/.local/share/@smartthings/cli/credentials.json` (서비스 계정 소유)
+- 전원 운영: QC5V + 15cm 케이블, 900MHz, 1코어
+- RPi에서 확인됨: 서비스 샌드박스 안 CLI 동작(기기 25개, 수집 방식 `history`), 설치·이전 스크립트 실행, PC에서 `http://<RPi IP>:8080` 응답
+- 아직 미확인: CLI 토큰 자동 갱신(액세스 토큰 만료 2026-11-11 00:06 KST), 실제 데이터로 본 대시보드와 첫 집계, 만료 시 재인증 출력, 스마트폰 로그인. 전체 목록은 [OPERATIONS: RPi 미확인 항목](OPERATIONS.md#rpi-미확인-항목)
 - 진행 단계 기준: [PLAN §11](../PLAN.md#11-단계별-진행)
-- RPi에서 시험하지 못한 항목: [OPERATIONS: RPi 미확인 항목](OPERATIONS.md#rpi-미확인-항목)
 - 자동 백업(M5): 미구현
 
 ## 어댑터 명칭
 
-- **QC5V**: 원래 쓰던 어댑터
-- **DZ5V3A**: 교체한 어댑터(케이블 일체형, 약 50cm)
+- QC5V: 원래 쓰던 어댑터. 현재 15cm 케이블로 운영
+- DZ5V3A: 교체한 어댑터(케이블 일체형, 약 50cm)

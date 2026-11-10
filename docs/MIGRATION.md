@@ -4,7 +4,7 @@
 
 - **자동 백업(M5): 미구현.** `deploy/`에 백업 서비스와 타이머 없음
 - 아래 [수동 사본](#수동-사본-m5-전까지)이 없고 microSD가 읽히지 않으면 쌓인 데이터 복구 불가
-- 복구 절차: **RPi에서 미시험 (RPi 미확인)**
+- 복구 절차: RPi에서 미시험 (RPi 미확인)
 - 파일 위치와 권한의 근거: `deploy/install.sh`
 
 ## 상황 선택
@@ -50,6 +50,7 @@ flowchart TD
 - 코드(`/opt/stcollector`), systemd 유닛, 명령행 래퍼: `install.sh`가 재생성
 - CLI 실행 파일: 다시 다운로드
 - CLI 자체 로그(`smartthings.log`): 내용 미확인이므로 이전 안 함
+- RPi 상태 기록(`/var/lib/stcollector/sysmon/`): 새 보드에서 새로 생성
 
 ### 복구 시 참고
 
@@ -159,10 +160,10 @@ flowchart TD
    ```
 
    ```bash
-   sudo systemctl enable --now stcollector stcollector-rollup.timer stcollector-web
+   sudo systemctl enable --now stcollector stcollector-rollup.timer stcollector-web stcollector-sysmon
    ```
 
-9. [README의 방화벽 단계](../README.md#4-방화벽과-서비스)로 8080 개방, [OPERATIONS의 일상 점검](OPERATIONS.md#일상-점검)으로 상태 확인. 멈춘 동안의 공백은 대시보드 **상태** 탭에 표시
+9. [README의 방화벽 단계](../README.md#4-방화벽과-서비스)로 8080 개방, [OPERATIONS의 일상 점검](OPERATIONS.md#일상-점검)으로 상태 확인. 멈춘 동안의 공백은 대시보드 상태 탭에 표시
 
 - 공유기 대역 변경 시: `ufw` 규칙, `allowed_networks`, `IPAddressAllow`를 함께 변경
 

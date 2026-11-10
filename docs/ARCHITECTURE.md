@@ -1,9 +1,8 @@
 # 구조
 
-- 범위: 지금 코드가 **어떻게 동작하는지** 설명
-- **왜 이렇게 정했는지**와 앞으로의 단계: [PLAN](../PLAN.md)이 기준
-- 작성 근거: 코드 직접 확인
-- 아직 RPi에서 시험하지 못한 내용: "RPi 미확인"으로 표시
+- 범위: 지금 코드의 동작
+- 왜 이렇게 정했는지와 앞으로의 단계: [PLAN](../PLAN.md)
+- 코드를 직접 읽어 작성. RPi에서 시험하지 못한 내용은 "RPi 미확인"으로 표시
 
 ## 전체 흐름
 
@@ -30,8 +29,9 @@ flowchart LR
     web --> browser
 ```
 
-- 세 프로세스 사이에 직접 호출 없음, **DB로만 연결**
+- 수집, 집계, 웹은 서로 직접 호출하지 않고 DB로만 연결
 - 하나가 멈춰도 나머지는 계속 동작
+- 그림에 없는 `stcollector-sysmon`: RPi 상태만 기록, 수집 DB와 분리된 `sysmon.db` 사용
 
 ## 수집
 
@@ -47,11 +47,13 @@ flowchart LR
 - 환경 변수: `HOME`(`cli_home`), `PATH`, `LANG`, `NO_COLOR`만 전달
 - `PATH`: 로그인용 `login-bin`이 없어 수집 중에는 `xdg-open` 대체 스크립트 미사용
 - 로그인 정보 파일이 없을 때: CLI를 실행하지 않고 `ReauthRequired` 발생. 실행하면 브라우저 로그인을 기다리다 시간 초과되기 때문
-- 로그인 만료 감지: 출력에서 만료로 보이는 문구를 찾아 `ReauthRequired`로 변환
+- 로그인 만료 감지: 출력에서 만료로 보이는 문구를 찾아 `ReauthRequired`로 변환. 실제 만료 때의 출력은 RPi 미확인
 - 오류 문구: `sanitize()`로 토큰처럼 보이는 값을 가린 뒤 로그에 기록
 - 재시도: HTTP 429나 5xx로 보이는 실패는 30초 뒤 1회
-- 이력 페이징: 최신순 가정, `--before`로 페이지 이동. 최신순이 아니면 `CliError`로 중단
-- 실제 출력과의 대조: RPi 미확인
+- 이력 페이징
+  - `--after`를 앞으로 옮겨 과거에서 최신 방향으로 읽음. 페이지 크기 상한 100건
+  - `--after` 없는 기기별 조회: `--before`를 옮겨 최신에서 과거 방향으로 읽음
+  - 실제 CLI 출력과 대조해 반영
 
 ### OAuth 클라이언트 (`client.py`, `auth.py`, `transport.py`)
 
@@ -107,8 +109,8 @@ flowchart TD
 
 - 시작점: `meta`의 `history_cursor:<위치>` 하나. 처음이면 `backfill_days`(기본 7일) 전부터 조회
 - 겹침 조회: 매번 10분을 겹쳐 늦게 도착한 이벤트 수신, 중복은 DB가 제거
-- 커서 이동: 끝까지 읽은 뒤에만 이동, 중간 실패 시 다음 주기에 재조회
-- 페이지 한도: 평소에도 `history_backfill_max_pages`(기본 100페이지) 사용. 정전 뒤 밀린 이벤트를 한 번에 받기 위함
+- 커서 이동: 페이지마다 저장. 실패, 종료, 페이지 한도 뒤에는 그 지점부터 다음 주기에 이어서 조회
+- 페이지 한도: 첫 조회는 `history_backfill_max_pages`(기본 100페이지), 이후 주기는 `history_max_pages`(기본 20페이지)
 - 새로 추가된 기기: `devices:history`로 따로 채움
 
 #### 오류 처리
@@ -144,7 +146,7 @@ flowchart LR
 ```
 
 1. `readings` 삽입 트리거가 바뀐 시간대를 `rollup_dirty`에 표시
-2. **끝난 시간**의 표시를 `rollup_claimed`로 옮겨 처리. 처리 중 도착한 값은 `rollup_dirty`에 새로 누적
+2. 끝난 시간의 표시를 `rollup_claimed`로 옮겨 처리. 처리 중 도착한 값은 `rollup_dirty`에 새로 누적
 3. 항목별 영향 시간 범위 계산. 이전 값이 다음 시간까지 유지될 수 있어 `max_hold_s`만큼 뒤쪽 범위까지 확장
 4. `rollup_hour`, `lux_hist_hour`, `occupancy_hour`, `lux_occ_hour`를 그 범위만 지우고 다시 기록
 5. `rollup_day`, `rollup_week`를 시간 집계에서 파생. 경계는 KST, 주는 월요일 시작. 값이 그대로면 기록하지 않아 microSD 쓰기 절감
@@ -174,12 +176,19 @@ flowchart LR
   - 화면 코드와 자체 SVG 차트(`charts.js`)
   - 외부 자원 불러오지 않음
 
+### 화면
+
+- 탭: 요약, 추세, 조도 분포, 재실, 플러그, 상태
+- 요약 탭: 방별 현재값 띠(온도 크게, 습도·조도·재실), 최근 24시간 온도 큰 차트 1개, 습도·조도 작은 차트 2개, 방별 상태 표
+- 조도 화면의 색: 전구색 계열
+- 상태 탭: RPi 현재값, 최근 24시간 온도·클럭·load, 이벤트 로그, 수집 상태, 센서별 마지막 보고
+
 ### API 캐시
 
 | API | 캐시 기준 |
 |---|---|
 | `/api/series`, `/api/lux-dist`, `/api/occupancy`, `/api/plugs` | 집계 완료 시각과 현재 시 |
-| `/api/summary`, `/api/status`, `/api/meta` | 15초 |
+| `/api/summary`, `/api/status`, `/api/meta`, `/api/system` | 15초 |
 
 ### 화면 상단 경고
 
@@ -192,6 +201,7 @@ flowchart LR
 | 집계 지연 | 마지막 집계 후 2시간 10분 초과 |
 | 디스크 부족 | 여유 공간 1GB 미만 |
 | 배터리 부족 | 20% 미만 |
+| 전압 부족, 스로틀링, 과열 | 모니터 현재값이 30초 안에 갱신됐고 해당 상태가 진행 중 |
 
 ## DB 테이블
 
@@ -230,7 +240,8 @@ flowchart TB
     web -->|"읽기"| db
 ```
 
-- 그림의 관계: 타이머만 집계 서비스를 시작하고, 서비스끼리는 DB로만 연결
+- 타이머만 집계 서비스를 시작하고, 서비스끼리는 DB로만 연결
+- 그림에 없는 `stcollector-sysmon.service`: 수집 DB를 쓰지 않는 상시 모니터
 
 | 유닛 | 형태 | 실행 | 주요 제한 |
 |---|---|---|---|
@@ -238,15 +249,16 @@ flowchart TB
 | `stcollector-web.service` | 상시, 실패 시 재시작. 종료 코드 2는 재시작 안 함 | `web` | `MemoryMax=128M`, 집 안 대역과 루프백만 통신 |
 | `stcollector-rollup.service` | 1회 실행 (`oneshot`) | `rollup` | `MemoryMax=256M`, `Nice=10`, IO idle, `PrivateNetwork=true` |
 | `stcollector-rollup.timer` | 매시 2분, 꺼져 있던 동안 놓치면 켜진 뒤 1회 | 위 서비스를 시작 | |
+| `stcollector-sysmon.service` | 상시, 실패 시 30초 뒤 재시작. 종료 코드 2는 재시작 안 함 | `sysmon` | `MemoryMax=48M`, `Nice=5`, IO idle, `PrivateNetwork=true`, 자격증명 경로 접근 차단 |
 
 - `install.sh`: 유닛 복사와 `daemon-reload`만 수행
-- **활성화(`enable`)**: 사람이 직접 수행
-- 설치 시 재시작 대상: 이미 실행 중인 수집과 웹만
+- 활성화(`enable`): 사람이 직접 수행. 현재 RPi는 수집, 웹, 모니터, 집계 타이머 모두 활성화, 부팅 시 자동 시작
+- 설치 시 재시작 대상: 이미 실행 중인 수집, 웹, 모니터만
 - 유닛 사이의 `After=`, `Requires=` 의존 관계: 없음
-- 중복 실행 방지: 수집기와 집계가 각각 잠금 파일(`sensors.db.lock`, `sensors.db.rollup.lock`) 사용
-- 실행 계정: 수집, 웹, 집계 모두 `stcollector`
+- 중복 실행 방지: 수집기, 집계, 모니터가 각각 잠금 파일(`sensors.db.lock`, `sensors.db.rollup.lock`, `sysmon/sysmon.db.lock`) 사용
+- 실행 계정: 수집, 웹, 집계, 모니터 모두 `stcollector`
 - 공통 보안 옵션: `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true` 등
-- 쓰기 가능 위치: `StateDirectory`인 `/var/lib/stcollector`만
+- 쓰기 가능 위치: `StateDirectory`인 `/var/lib/stcollector`만. 모니터는 `/var/lib/stcollector/sysmon`과 `/run/stcollector-sysmon`만
 
 ## 파일 위치
 
@@ -261,6 +273,8 @@ flowchart TB
 | `/var/lib/stcollector/cli/.local/share/@smartthings/cli/credentials.json` | CLI 자격증명 | stcollector, 파일 600, 폴더 700 |
 | `/var/lib/stcollector/cli/.local/state/@smartthings/cli/smartthings.log` | CLI 자체 로그 | stcollector |
 | `/var/lib/stcollector/token.json` | OAuth 토큰 (OAuth 방식일 때만) | stcollector, 600 |
+| `/var/lib/stcollector/sysmon/sysmon.db` | RPi 상태 1분 요약과 이벤트 | stcollector, 폴더 700 |
+| `/run/stcollector-sysmon/current.json` | RPi 상태 현재값 (tmpfs) | stcollector, 폴더 700 |
 
 ## 보안 경계
 
@@ -303,7 +317,7 @@ flowchart LR
 | 대시보드 로그인 | scrypt, IP별 5회 실패 시 5분 차단, `HttpOnly`·`SameSite=Lax` 쿠키, POST `Origin` 검사, 자체 출처만 허용하는 CSP | 로그인 전 접근 가능 범위는 로그인 화면, CSS, manifest, 아이콘 |
 | 수집기 → 기기 제어 | `ALLOWED_COMMANDS` 허용 목록 | 수집기 안의 제한. 자격증명 파일 유출 시 차단 불가 |
 | CLI 자격증명 파일 | `stcollector` 계정 전용 (파일 600, 폴더 700) | 권한은 `controller:stCli`로 제어까지 가능. 웹과 집계도 같은 계정으로 동작, sudo 사용자는 읽기 가능 |
-| 프로세스 격리 | systemd 보안 옵션 | 수집 서비스는 나가는 IP 제한 없음. 샌드박스 아래 CLI 동작은 RPi 미확인 |
+| 프로세스 격리 | systemd 보안 옵션 | 수집 서비스는 나가는 IP 제한 없음 |
 | 로그 | CLI 오류 문구 가림, 웹 접속 로그 없음 | CLI 자체 로그의 내용은 미확인 |
 
 - DB 사본도 외부 업로드 금지: 기기 이름, 방 이름, 위치 ID 포함

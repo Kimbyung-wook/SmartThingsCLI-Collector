@@ -2,28 +2,28 @@
 
 ## 개요
 
-- 기능: SmartThings API에서 센서 데이터를 받아 **Raspberry Pi 안의 SQLite에만** 저장
-- 이 문서의 범위: 설치 안내
+- SmartThings 센서 데이터를 받아 Raspberry Pi 안의 SQLite에만 저장
+- 이 문서: 설치 안내
 - 운영, 장애 대응, 보드 교체, 구조: [문서 지도](docs/README.md)
 - 설계와 전체 계획: [PLAN.md](PLAN.md)
 
 ### 구현 상태
 
-- 포함 범위: **M0(준비), M1(수집), M2(집계), M3·M4(대시보드)**
-- 수집 코드의 CLI 전환과 배포 스크립트: PC 테스트까지 완료, **RPi에는 아직 미배포**
-- 지금 RPi: 예전 M1 코드가 있으므로 배포 시 아래 M1의 기존 설치 안내 적용
-- 시험하지 못한 항목: [RPi 미확인 목록](docs/OPERATIONS.md#rpi-미확인-항목)
-- 자동 백업(M5): 아직 없음
+- 구현 범위: M0(준비), M1(수집), M2(집계), M3·M4(대시보드)
+- 배포: 2026-11-10 01:15 KST 완료. `stcollector`, `stcollector-web`, `stcollector-sysmon`, `stcollector-rollup.timer` 활성화, 부팅 시 자동 시작
+- RPi에서 확인됨: 서비스 샌드박스 안 CLI 동작(기기 25개, 수집 방식 `history`), 설치·이전 스크립트 실행, PC에서 `http://<RPi IP>:8080` 응답
+- 아직 미확인: CLI 토큰 자동 갱신, 실제 데이터로 본 대시보드와 첫 집계, 만료 시 재인증 출력, 스마트폰 로그인. 전체 목록은 [RPi 미확인 항목](docs/OPERATIONS.md#rpi-미확인-항목)
+- 자동 백업(M5): 미구현
 
 ### 의존성과 보안 전제
 
 - Python 코드: 3.11+ 표준 라이브러리만 사용
-- **Python 외의 유일한 실행 의존성: SmartThings CLI**(3.0.0, linux-arm64 단일 실행 파일)
+- Python 외 실행 의존성: SmartThings CLI 하나(3.0.0, linux-arm64 단일 실행 파일)
 - 나가는 연결: SmartThings 서버로 나가는 HTTPS뿐
 - 들어오는 연결: 집 안 네트워크에서 대시보드와 SSH로 오는 접속뿐
 - **CLI 자격증명의 권한: `controller:stCli`, 읽기 전용 아님**
 - 읽기 제한: 수집기 코드의 명령 허용 목록으로 읽기 명령만 실행
-- 제한의 한계: 수집기 안의 제한이므로 자격증명 파일 유출 시 차단 불가
+- 허용 목록은 수집기 안의 제한이라 자격증명 파일이 유출되면 막지 못함
 - 파일 보호: `stcollector` 계정 전용(파일 600, 폴더 700)
 
 ---
@@ -42,10 +42,10 @@
    ```
 
 2. Raspberry Pi Imager 설정
-   - 장치: **Raspberry Pi 3**
-   - OS: **Raspberry Pi OS Lite (64-bit, Bookworm 이상)**
+   - 장치: Raspberry Pi 3
+   - OS: Raspberry Pi OS Lite (64-bit, Bookworm 이상)
    - OS 설정 화면: 호스트명(예: `homesensor`), 사용자와 비밀번호, 시간대 입력
-   - SSH: 켠 뒤 **공개키 인증만 허용** 선택, 위 공개키 붙여 넣기
+   - SSH: 켠 뒤 공개키 인증만 허용 선택, 위 공개키 붙여 넣기
 
 3. uSD와 LAN 케이블 연결 후 전원 투입. 첫 부팅은 파티션 확장과 재부팅 때문에 몇 분 소요. PC에서 접속
 
@@ -90,8 +90,9 @@
    | 1코어 | `/boot/firmware/cmdline.txt` (한 줄 유지) | `maxcpus=1` |
 
    - 설정 이유와 되돌리는 방법: [전원 시험 결과](docs/POWER_TEST.md)
-   - 시험 범위: **DZ5V3A와 QC5V(15cm 케이블)로 각각 약 12분 시험한 결과이므로 다른 어댑터나 케이블에 그대로 적용 불가**
-   - Wi-Fi를 끄므로 **유선 이더넷 연결 필수**
+   - 현재 운영 전원: QC5V + 15cm 케이블
+   - 시험 범위: DZ5V3A와 QC5V(15cm 케이블)로 각각 약 12분. 다른 어댑터나 케이블에는 그대로 적용 불가
+   - Wi-Fi를 끄므로 유선 이더넷 필수
    - 재부팅 후 `nproc` 이 `1`: 코어 설정 적용 상태
    - 전압 상태: 지금 쓰는 어댑터로 운영 중에 `vcgencmd get_throttled` 실행
    - `throttled=0x0`: 부팅 후 전압 부족과 스로틀링 기록 없음
@@ -114,7 +115,7 @@
 - OAuth 사용 시: 아래 [선택: OAuth 방식](#선택-oauth-방식)
 - 다운로드: [SmartThings CLI 릴리스](https://github.com/SmartThingsCommunity/smartthings-cli/releases)에서 linux-arm64용 파일을 받아 RPi의 `~/st-cli/smartthings` 에 실행 파일로 배치
 - 검증한 버전: 3.0.0
-- 설치와 로그인: 다음 M1 단계에서 진행
+- 설치와 로그인: M1에서 진행
 
 ---
 
@@ -189,7 +190,7 @@ stcollector check
 
 - 수집 대상 기기 목록 (센서 10기와 플러그 표시 여부)
 - 상태 조회 결과와 센서가 보고한 시각
-- **이벤트 이력 API 사용 가능 여부와 정렬 순서** (PLAN §12-5)
+- 이벤트 이력 API 사용 가능 여부와 정렬 순서 (PLAN §12-5)
 
 ### 5) 수집 시작
 
@@ -278,8 +279,8 @@ sequenceDiagram
 
 ### 확인되지 않은 사항: CLI 토큰 자동 갱신
 
-- CLI가 만료된 액세스 토큰을 스스로 갱신하는지: **아직 미확인**
-- 현재 액세스 토큰의 만료 시각: 2026-11-10T15:06Z
+- CLI가 만료된 액세스 토큰을 스스로 갱신하는지: 아직 미확인
+- 현재 액세스 토큰의 만료 시각: 2026-11-10T15:06Z (2026-11-11 00:06 KST)
 - 리프레시 토큰: 자격증명에 포함, 유효기간은 미확인
 
 만료 시각이 지난 뒤 확인 절차:
@@ -309,7 +310,7 @@ sequenceDiagram
    scp -r stcollector deploy config.example.toml <사용자>@<RPi IP>:~/stcollector-src/
    ```
 
-2. RPi에서 설치 스크립트 재실행. 설정, DB, CLI 자격증명은 유지되고 `[rollup]`, `[web]` 항목만 없을 때 추가
+2. RPi에서 설치 스크립트 재실행. 설정, DB, CLI 자격증명은 유지되고 `[rollup]`, `[web]`, `[sysmon]` 항목만 없을 때 추가
 
    ```bash
    cd ~/stcollector-src && sudo ./deploy/install.sh
@@ -361,11 +362,18 @@ sudo systemctl enable --now stcollector-web
 systemctl status stcollector-web
 ```
 
+```bash
+sudo systemctl enable --now stcollector-sysmon
+```
+
+- `stcollector-sysmon`: 상태 탭에 나오는 RPi 온도, 클럭, 전압 부족 이벤트 기록
+
 ### 5) 접속
 
 - 주소: 같은 공유기에 연결된 스마트폰이나 PC 브라우저에서 `http://<RPi IP>:8080`
-- 스마트폰 아이콘: 브라우저 메뉴의 **홈 화면에 추가**. HTTP 접속이라 Android Chrome에서는 독립 앱 창이 아니라 브라우저 바로가기로 열릴 수 있음
-- 차트: **끝난 시간까지의 집계**를 표시
+- 스마트폰 아이콘: 브라우저 메뉴의 '홈 화면에 추가'. HTTP 접속이라 Android Chrome에서는 독립 앱 창이 아니라 브라우저 바로가기로 열릴 수 있음
+- 요약 화면 구성: 방별 현재값 띠(온도 크게, 습도·조도·재실), 온도 큰 차트 1개, 습도·조도 작은 차트 2개, 방별 상태 표
+- 차트: 끝난 시간까지의 집계를 표시
 - 요약 화면의 현재값과 오늘 최고·최저: 최신 측정값까지 반영
 - 비밀번호 변경: 해시를 새로 넣고 `sudo systemctl restart stcollector-web` 실행. 기존 로그인 모두 해제
 - 공유기 대역이 `192.168.0.x` 가 아니게 될 때: ufw 규칙, `config.toml` 의 `allowed_networks`, `stcollector-web.service` 의 `IPAddressAllow` 를 함께 변경
@@ -375,7 +383,7 @@ systemctl status stcollector-web
 
 ## 선택: OAuth 방식
 
-- 조건: OAuth-In 앱을 만들고 관리하려면 **유료 SmartThings Developer Plan**(보도상 월 $4.99) 필요
+- 조건: OAuth-In 앱을 만들고 관리하려면 유료 SmartThings Developer Plan(보도상 월 $4.99) 필요
 - 장점: 권한을 읽기 전용(`r:devices:*`, `r:locations:*`)으로 축소 가능, CLI를 수집에 사용하지 않음
 
 1. PC에서 앱 생성. CLI 3.0.0부터 `apps*` 명령은 `smartapps*` 로 변경. Client Secret 재발급은 `smartthings smartapps:oauth:generate` 사용
@@ -394,7 +402,7 @@ systemctl status stcollector-web
    | Scopes | **`r:devices:*`, `r:locations:*`** 만 선택 |
    | Redirect URIs | `https://localhost/callback` |
 
-3. 마지막에 출력되는 **OAuth Client Id**와 **OAuth Client Secret**을 안전한 곳에 기록. Secret은 이때 한 번만 표시
+3. 마지막에 출력되는 OAuth Client Id와 OAuth Client Secret을 안전한 곳에 기록. Secret은 이때 한 번만 표시
 4. `/etc/stcollector/config.toml` 의 `[smartthings]` 에서 `backend = "oauth"` 로 변경, `client_id`, `client_secret`, `redirect_uri`, `scopes` 의 주석을 풀어 값 입력
 5. `stcollector auth` 실행 후 출력된 URL을 브라우저에서 승인, 주소창의 `https://localhost/callback?code=...&state=...` 전체를 터미널에 붙여 넣기. 브라우저에 "페이지를 열 수 없음"이 떠도 정상
 
@@ -441,14 +449,15 @@ stcollector/
   db.py, schema.sql  SQLite 저장 (WAL, 중복 제거)
   intervals.py   보고 간격 리포트
   rollup.py      시간·일·주 집계, 조도 구간, 재실, 원본 정리
-  settings.py    [rollup], [web] 설정
+  settings.py    [rollup], [web], [sysmon] 설정
+  sysmon.py      RPi 상태 모니터 (sysfs와 /proc만 읽음, 별도 sysmon.db)
   web/           대시보드 (표준 라이브러리 HTTP 서버, 자체 SVG 차트)
 deploy/
   install.sh                     코드, CLI, 설정, systemd 설치
   migrate-cli-credentials.sh     CLI 자격증명을 서비스 계정으로 이전
   cli/xdg-open                   헤드리스 로그인용 (주소만 출력)
   stcollector                    명령행 래퍼
-  systemd/                       수집, 웹, 집계 timer
+  systemd/                       수집, 웹, 집계 timer, 모니터
 docs/
   README.md        문서 지도
   ARCHITECTURE.md  코드 흐름, DB 테이블, 서비스, 보안 경계
