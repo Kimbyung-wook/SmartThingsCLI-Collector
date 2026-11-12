@@ -66,7 +66,8 @@
 
   // ---- 선 + 범위 띠 -------------------------------------------------------------
   /* o: {n, x(i), tip(i), series:[{name, color, avg, min, max, coverage}], band, log, unit, digits,
-         aria, directLabels, domain:[lo,hi]} */
+         aria, directLabels, domain:[lo,hi]}
+     band: 최소~최대 띠. 계열이 하나면 무채색(--band), 여럿이면 계열 색을 옅게(.rband) */
   function line(host, o) { mount(host, () => drawLine(host, o)); }
 
   function drawLine(host, o) {
@@ -129,23 +130,44 @@
       txt(svg, X(i), Ht - 8, o.x(i), 'tick', i === n - 1 ? 'end' : 'middle');
     }
 
+    // 띠를 모두 먼저 깔고 평균선을 그 위에 그린다. 여러 방이면 띠도 방 색(옅게)
+    const multi = o.series.length > 1;
+    const P = (i, v) => X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
+    const faintOf = se => i => se.coverage && se.coverage[i] != null && se.coverage[i] < 0.5;
+    const hasBand = se => o.band && se.min && se.max;
+    o.series.forEach(se => {
+      if (!hasBand(se)) return;
+      const faint = faintOf(se), ok = i => se.min[i] != null && se.max[i] != null;
+      let solid = '', faded = '';
+      for (let i = 0; i < n; i++) {
+        if (!ok(i)) continue;
+        // 이웃 구간이 비면 한 칸 폭의 띠로 그려서 외딴 점도 범위가 보이게 한다
+        if (i < n - 1 && ok(i + 1)) {
+          const q = 'M' + P(i, se.max[i]) + 'L' + P(i + 1, se.max[i + 1]) + 'L' + P(i + 1, se.min[i + 1]) + 'L' + P(i, se.min[i]) + 'Z';
+          if (faint(i) || faint(i + 1)) faded += q; else solid += q;
+        } else if (!(i > 0 && ok(i - 1))) {
+          const w = Math.max(2, iw / n / 2), x = X(i);
+          const q = 'M' + (x - w / 2).toFixed(1) + ' ' + Y(se.max[i]).toFixed(1) + 'H' + (x + w / 2).toFixed(1) + 'V' + Y(se.min[i]).toFixed(1) + 'H' + (x - w / 2).toFixed(1) + 'Z';
+          if (faint(i)) faded += q; else solid += q;
+        }
+      }
+      const drawBand = (d, op) => {
+        if (!d) return;
+        const p = s('path', { d, 'fill-rule': 'nonzero', opacity: op, class: multi ? 'rband' : null }, svg);
+        p.style.fill = multi ? color(se.color) : 'var(--band)';
+      };
+      drawBand(solid, 1); drawBand(faded, 0.5);
+    });
+
     o.series.forEach(se => {
       const c = color(se.color);
-      const ok = i => se.avg[i] != null, faint = i => se.coverage && se.coverage[i] != null && se.coverage[i] < 0.5;
-      const P = (i, v) => X(i).toFixed(1) + ' ' + Y(v).toFixed(1);
-      let solid = '', faded = '', bandSolid = '', bandFaded = '';
+      const ok = i => se.avg[i] != null, faint = faintOf(se);
+      let solid = '', faded = '';
       for (let i = 0; i < n - 1; i++) {
         if (!ok(i) || !ok(i + 1)) continue;
         const seg = 'M' + P(i, se.avg[i]) + 'L' + P(i + 1, se.avg[i + 1]);
-        const f = faint(i) || faint(i + 1);
-        if (f) faded += seg; else solid += seg;
-        if (o.band && se.min) {
-          const q = 'M' + P(i, se.max[i]) + 'L' + P(i + 1, se.max[i + 1]) + 'L' + P(i + 1, se.min[i + 1]) + 'L' + P(i, se.min[i]) + 'Z';
-          if (f) bandFaded += q; else bandSolid += q;
-        }
+        if (faint(i) || faint(i + 1)) faded += seg; else solid += seg;
       }
-      const drawBand = (d, op) => { if (d) { const p = s('path', { d, 'fill-rule': 'nonzero', opacity: op }, svg); p.style.fill = 'var(--band)'; } };
-      drawBand(bandSolid, 1); drawBand(bandFaded, 0.5);
       const drawLinePath = (d, op) => {
         if (!d) return;
         const p = s('path', { d, fill: 'none', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: op }, svg);
@@ -204,7 +226,8 @@
           rows.push({ key: '최대', value: fmt(se.max[i], o.digits) });
           rows.push({ key: '최소', value: fmt(se.min[i], o.digits) });
         } else {
-          rows.push({ key: se.name, value: se.avg[i] == null ? '데이터 없음' : fmt(se.avg[i], o.digits) + ' ' + o.unit, color: color(se.color) });
+          const range = o.band && se.min && se.min[i] != null && se.max[i] != null ? ' (' + fmt(se.min[i], o.digits) + '~' + fmt(se.max[i], o.digits) + ')' : '';
+          rows.push({ key: se.name, value: se.avg[i] == null ? '데이터 없음' : fmt(se.avg[i], o.digits) + range + ' ' + o.unit, color: color(se.color) });
         }
       });
       const cov = o.series.length === 1 && o.series[0].coverage ? o.series[0].coverage[i] : null;

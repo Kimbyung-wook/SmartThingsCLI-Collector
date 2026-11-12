@@ -158,14 +158,16 @@
     const plot = ([metric, label], big) => {
       const c = charts[summaryMetrics.findIndex(m => m[0] === metric)], rs = c.series.filter(x => x.avg.some(v => v != null));
       const log = metric === 'illuminance';
-      const sec = section(label, log ? '최근 24시간 · 세로축 로그 눈금' : big ? '최근 24시간 · 시간별 평균' : '최근 24시간');
+      const band = rs.some(x => x.min != null);
+      const sub = ['최근 24시간', '선은 평균', band ? '띠는 최소~최대' : null, log ? '로그 눈금' : null];
+      const sec = section(label, sub.filter(Boolean).join(' · '));
       if (!rs.length) { sec.append(empty('아직 집계된 값 없음', '매시 2분 갱신')); return sec; }
       const host = chartHost();
       later(() => Charts.line(host, {
         n: c.buckets.length, x: i => bucketX(c.buckets[i], c.grain), tip: i => bucketTip(c.buckets[i], c.grain),
-        series: rs, band: false, log, unit: c.unit, digits: c.digits, directLabels: rs.length > 1,
+        series: rs, band, log, unit: c.unit, digits: c.digits, directLabels: rs.length > 1,
         height: big ? (W => (W < 520 ? 220 : 300)) : (W => (W < 520 ? 170 : 200)),
-        aria: `최근 24시간 방별 ${label} 차트. 추세 화면에서 표로 볼 수 있습니다.`,
+        aria: `최근 24시간 방별 ${label} 차트. 선은 평균, 띠는 최소~최대. 추세 화면에서 표로 볼 수 있습니다.`,
       }));
       sec.append(host);
       return sec;
@@ -212,34 +214,11 @@
     const rs = cmp ? available : (S.room === 'all' ? available : available.filter(x => x.name === S.room));
     const digits = unitDigits(d), n = d.buckets.length;
     const log = S.metric === 'illuminance';
-    const band = !cmp && rs[0].min != null;
-    const aggr = r => {
-      let sum = 0, w = 0, mx = -Infinity, mn = Infinity, mxI = -1, mnI = -1;
-      for (let i = 0; i < n; i++) {
-        if (r.avg[i] == null) continue;
-        const c = r.coverage[i] || 0; sum += r.avg[i] * c; w += c;
-        const hi = r.max ? r.max[i] : r.avg[i], lo = r.min ? r.min[i] : r.avg[i];
-        if (hi > mx) { mx = hi; mxI = i; }
-        if (lo < mn) { mn = lo; mnI = i; }
-      }
-      return { avg: w ? sum / w : null, mx, mn, mxI, mnI };
-    };
-    let stats;
-    if (cmp) {
-      stats = table(['방', '평균', '최대', '최소'], rs.map(r => {
-        const g = aggr(r);
-        return [r.name, fmt(g.avg, digits), fmt(g.mx, digits), fmt(g.mn, digits)];
-      }), i => i > 0);
-    } else {
-      const g = aggr(rs[0]);
-      stats = h('div', { class: 'stats' },
-        stat('기간 평균', fmt(g.avg, digits) + ' ' + d.unit),
-        stat('최대', fmt(g.mx, digits) + ' ' + d.unit, bucketTip(d.buckets[g.mxI], d.grain)),
-        stat('최소', fmt(g.mn, digits) + ' ' + d.unit, bucketTip(d.buckets[g.mnI], d.grain)));
-    }
+    // 평균은 선, 구간별 최소~최대는 띠 (이슬점은 계산값이라 띠 없음)
+    const band = rs.some(r => r.min != null);
     const legend = h('div', { class: 'legend' },
-      cmp ? rs.map(r => legendLine(color(r.color), r.name))
-        : [legendLine(color(rs[0].color), '평균'), band ? h('span', null, h('i', { class: 'band-key' }), '최대~최소 범위') : null],
+      cmp ? rs.map(r => legendLine(color(r.color), r.name)) : legendLine(color(rs[0].color), '평균'),
+      band ? h('span', null, h('i', { class: 'band-key' }), cmp ? '옅은 띠는 방별 최소~최대' : '최소~최대 범위') : null,
       log ? h('span', { text: '세로축은 로그 눈금' }) : null,
       h('span', { text: '흐린 구간은 수집률 50% 미만' }));
     const host = chartHost();
@@ -247,14 +226,14 @@
     later(() => Charts.line(host, {
       n, x: i => bucketX(d.buckets[i], d.grain), tip: i => bucketTip(d.buckets[i], d.grain),
       series: rs, band, log, unit: d.unit, digits, directLabels: cmp,
-      aria: `${metricLabel} 추세 차트. 값은 아래 표로도 볼 수 있습니다.`,
+      aria: `${metricLabel} 추세 차트. 선은 평균, 띠는 최소~최대. 값은 아래 표로도 볼 수 있습니다.`,
     }));
+    const cell = (r, i) => fmt(r.avg[i], digits) + (band && r.min && r.min[i] != null ? ` (${fmt(r.min[i], digits)}~${fmt(r.max[i], digits)})` : '');
     const tv = tableView(() => table(
-      ['구간', ...(cmp ? rs.map(r => r.name + ' 평균') : band ? ['평균', '최대', '최소'] : ['평균'])],
-      d.buckets.map((b, i) => [bucketTip(b, d.grain),
-        ...(cmp ? rs.map(r => fmt(r.avg[i], digits)) : band ? [fmt(rs[0].avg[i], digits), fmt(rs[0].max[i], digits), fmt(rs[0].min[i], digits)] : [fmt(rs[0].avg[i], digits)])]),
+      ['구간', ...rs.map(r => (cmp ? r.name + ' ' : '') + (band ? '평균 (최소~최대)' : '평균'))],
+      d.buckets.map((b, i) => [bucketTip(b, d.grain), ...rs.map(r => cell(r, i))]),
       i => i > 0));
-    return [controls, stats, legend, host, tv,
+    return [controls, legend, host, tv,
       S.period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
   }
 
