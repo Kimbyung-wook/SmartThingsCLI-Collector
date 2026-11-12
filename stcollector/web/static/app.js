@@ -414,7 +414,7 @@
     if (e.kind === 'boot') {
       body.append(h('p', { class: 'sub', text: 'Raspberry Pi 부팅 · 직전 프로세스 기록 없음' }));
     } else {
-      const at = [e.temp_c != null ? fmt(e.temp_c, 1) + '°C' : null, e.freq_mhz != null ? fmt(e.freq_mhz) + ' MHz' : null, e.load1 != null ? 'load ' + fmt(e.load1, 2) : null].filter(Boolean).join(' · ');
+      const at = [e.temp_c != null ? fmt(e.temp_c, 1) + '°C' : null, e.freq_mhz != null ? fmt(e.freq_mhz) + ' MHz' : null, e.load1 != null ? 'CPU Load ' + loadPct(e.load1) : null].filter(Boolean).join(' · ');
       if (at) body.append(h('p', { class: 'sub', text: '시작할 때: ' + at }));
       body.append(e.procs.length ? table(['직전 60초 프로세스', 'CPU 초', '점유율'], e.procs.map(p => [p.name, fmt(p.cpu_s, 1), fmt(p.pct, 1) + '%']), i => i > 0)
         : h('p', { class: 'sub', text: '직전 프로세스 기록 없음' }));
@@ -427,7 +427,12 @@
         h('span', { class: 'when', text: state })),
       body);
   }
+  // load 는 저장된 값 그대로 받고, 화면에서만 코어 수로 나눈 % 로 보여 준다 (100% 를 넘을 수 있다)
+  let cores = 1;
+  const loadToPct = v => (v == null ? null : v * 100 / cores);
+  const loadPct = v => (v == null ? '—' : fmt(loadToPct(v)) + '%');
   function systemSections(sys) {
+    cores = (sys && sys.cpu_count) || 1;
     const head = section('Raspberry Pi', '5초 간격');
     if (!sys || !sys.available) {
       head.append(empty('시스템 기록 없음', 'stcollector-sysmon 서비스가 실행되면 표시'));
@@ -440,7 +445,7 @@
       head.append(h('div', { class: 'stats' },
         stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
         stat('CPU 클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
-        stat('load (1분)', c.load1 != null ? fmt(c.load1, 2) : '—'),
+        stat('CPU Load (1분)', loadPct(c.load1)),
         stat('여유 메모리', c.mem_avail_mb != null ? fmt(c.mem_avail_mb) + ' MB' : '—', c.mem_total_mb ? '전체 ' + fmt(c.mem_total_mb) + ' MB' : null),
         stat('디스크 여유', c.disk_free_gb != null ? fmt(c.disk_free_gb, 1) + ' GB' : '—', c.disk_total_gb ? '전체 ' + fmt(c.disk_total_gb, 1) + ' GB' : null),
         stat('가동 시간', uptime)));
@@ -469,20 +474,20 @@
       const base = { n, x: i => hm(q.buckets[i]), tip: i => stamp(q.buckets[i]), shade: i => uv[i] > 0,
         extra: i => (uv[i] > 0 ? [{ key: '전압 부족', value: uv[i] + '초' }] : []), height: W => (W < 520 ? 150 : 180) };
       const chart = (title, label, avg, opts) => {
-        const sec = section(title), host = chartHost();
+        const sec = section(title, opts.sub), host = chartHost();
         const se = { name: label, color: 'ink', avg, coverage: q.coverage, min: opts.min || null, max: opts.max || null };
         later(() => Charts.line(host, { ...base, series: [se], band: !!opts.min, unit: opts.unit, digits: opts.digits, domain: opts.domain, aria: `${periodLabel} ${title} 차트. 값은 아래 표로도 볼 수 있습니다.` }));
         sec.append(host);
         return sec;
       };
-      const loadTop = Math.max(1, ...q.load.filter(v => v != null));
+      const load = q.load.map(loadToPct), loadTop = Math.max(100, ...load.filter(v => v != null));
       if (key) charts.append(key);
       out.push(
         chart('CPU 온도', '온도', q.temp_avg, { min: q.temp_min, max: q.temp_max, unit: '°C', digits: 1 }),
         chart('CPU 클럭', 'CPU 클럭', q.freq, { unit: 'MHz', digits: 0 }),
-        chart('load', 'load', q.load, { unit: '', digits: 2, domain: [0, loadTop] }),
-        tableView(() => table(['시각', '온도 °C', 'CPU 클럭 MHz', 'load', '전압 부족 초'],
-          q.buckets.map((b, i) => [stamp(b), fmt(q.temp_avg[i], 1), fmt(q.freq[i]), fmt(q.load[i], 2), uv[i]]).filter((_, i) => q.coverage[i] != null), i => i > 0)));
+        chart('CPU Load', 'CPU Load', load, { unit: '%', digits: 0, domain: [0, loadTop], sub: '100% 초과는 CPU를 기다리는 작업이 있다는 뜻' }),
+        tableView(() => table(['시각', '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', '전압 부족 초'],
+          q.buckets.map((b, i) => [stamp(b), fmt(q.temp_avg[i], 1), fmt(q.freq[i]), fmt(load[i]), uv[i]]).filter((_, i) => q.coverage[i] != null), i => i > 0)));
     } else {
       charts.append(empty('이 기간 기록 없음', '모니터가 기록을 남기면 표시'));
     }

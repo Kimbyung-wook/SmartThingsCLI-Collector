@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -710,6 +711,15 @@ def _sysmon_rows(ctx: Context, start: int) -> tuple[list[tuple], list[tuple], bo
     return minutes, events, True
 
 
+def _cpu_count() -> int:
+    """load 를 % 로 바꿀 때 나눌 코어 수.
+
+    Linux 의 os.cpu_count() 는 켜져 있는 코어 수(_SC_NPROCESSORS_ONLN)라서
+    maxcpus=1 로 부팅한 RPi 에서는 1 이 된다. 알 수 없으면 1 로 둔다.
+    """
+    return os.cpu_count() or 1
+
+
 def _mean(values: list):
     return sum(values) / len(values) if values else None
 
@@ -771,7 +781,8 @@ def system(ctx: Context, params: dict) -> dict:
         view["active"] = current.get("active") or []
         view["top"] = current.get("top") or []
         view["stale"] = now - ts > SYSMON_STALE_MS
-    return {"available": has_db or current is not None, "current": view, "series": series, "events": out_events}
+    return {"available": has_db or current is not None, "cpu_count": _cpu_count(), "current": view,
+            "series": series, "events": out_events}
 
 
 def meta(ctx: Context, params: dict) -> dict:

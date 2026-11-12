@@ -12,7 +12,7 @@ from stcollector import __version__
 from stcollector.config import ConfigError
 from stcollector.settings import SysmonSettings, WebSettings, load_sysmon_settings, sysmon_db_path
 from stcollector.sysmon import Monitor, Sample, SysmonStore, SystemReader, parse_stat, run_monitor, write_runtime
-from stcollector.web import server
+from stcollector.web import api, server
 from stcollector.web.session import hash_password
 from tests.helpers import TempDirMixin
 
@@ -430,6 +430,14 @@ class SystemApiTests(TempDirMixin, unittest.TestCase):
         self.assertIn('id="footer"', index)
         self.assertIn("meta.version", script)
         self.assertNotIn(__version__, index)
+
+    def test_cpu_count_for_load_percent(self):
+        self.start()
+        d = json.loads(self.get("/api/system")[1])
+        self.assertIsInstance(d["cpu_count"], int)
+        self.assertGreaterEqual(d["cpu_count"], 1)
+        with mock.patch("stcollector.web.api.os.cpu_count", return_value=None):
+            self.assertEqual(api._cpu_count(), 1)
 
     def test_without_monitor(self):
         self.start(with_data=False)
