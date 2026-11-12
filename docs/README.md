@@ -12,6 +12,7 @@
 | 코드 동작 방식, DB 테이블, 서비스 관계, 보안 경계 | [ARCHITECTURE](ARCHITECTURE.md) |
 | 설계 이유, 앞으로의 단계 | [PLAN](../PLAN.md) |
 | 전압 부족 시험 결과, 전원 운영 설정 되돌리기 | [POWER_TEST](POWER_TEST.md) |
+| SmartThings 앱에서 RPi 상태 보기, 허브 드라이버 설치 | [edge-driver/README](../edge-driver/README.md) |
 
 ## 내용이 겹칠 때 기준
 

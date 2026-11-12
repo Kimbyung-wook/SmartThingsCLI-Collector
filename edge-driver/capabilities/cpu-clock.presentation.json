@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{cpuClock.value}} {{cpuClock.unit}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "{{i18n.label}}",
+      "displayType": "state",
+      "state": {
+        "label": "{{cpuClock.value}} {{cpuClock.unit}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "{{i18n.label}}",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "cpuClock.value",
+          "valueType": "number",
+          "unit": "cpuClock.unit",
+          "range": [
+            0,
+            5000
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.cpuClock",
+  "version": 1
+}

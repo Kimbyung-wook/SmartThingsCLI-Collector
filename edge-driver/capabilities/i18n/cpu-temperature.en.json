@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "CPU Temperature",
+  "attributes": {
+    "cpuTemperature": {
+      "label": "CPU Temperature",
+      "displayTemplate": "{{device.label}} CPU Temperature: {{value}}°{{unit}}"
+    }
+  }
+}

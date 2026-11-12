@@ -1,0 +1,34 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{collectStatus.value}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "{{i18n.label}}",
+      "displayType": "state",
+      "state": {
+        "label": "{{collectStatus.value}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "{{i18n.label}}",
+        "displayType": "textField",
+        "textField": {
+          "value": "collectStatus.value",
+          "valueType": "string"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.collectStatus",
+  "version": 1
+}

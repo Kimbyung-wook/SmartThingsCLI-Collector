@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "{{i18n.label}}",
+      "displayType": "state",
+      "state": {
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "{{i18n.label}}",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "cpuUsage.value",
+          "valueType": "number",
+          "unit": "cpuUsage.unit",
+          "range": [
+            0,
+            100
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.cpuUsage",
+  "version": 1
+}

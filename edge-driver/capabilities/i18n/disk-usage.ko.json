@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "디스크 사용량",
+  "attributes": {
+    "diskUsage": {
+      "label": "디스크 사용량",
+      "displayTemplate": "{{device.label}} 디스크 사용량: {{value}}{{unit}}"
+    }
+  }
+}

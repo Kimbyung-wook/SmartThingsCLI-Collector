@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "CPU 클럭",
+  "attributes": {
+    "cpuClock": {
+      "label": "CPU 클럭",
+      "displayTemplate": "{{device.label}} CPU 클럭: {{value}} {{unit}}"
+    }
+  }
+}

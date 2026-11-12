@@ -1,0 +1,45 @@
+# RPi 상태 기기 하나. 맨 앞의 contactSensor 는 수집 이상 알림용(닫힘=정상, 열림=이상)이다.
+# CPU 온도는 표준 temperatureMeasurement 를 쓰지 않는다 (루틴 조건 범위가 좁고 80~100°C 를 넘을 수 있음).
+# angelconcert61717.* 는 capabilities/ 의 JSON 으로 먼저 만들어 두어야 패키징이 된다.
+name: stcollector-rpi.v1
+components:
+  - id: main
+    capabilities:
+      - id: contactSensor
+        version: 1
+      - id: angelconcert61717.collectStatus
+        version: 1
+      - id: angelconcert61717.lastCollectTime
+        version: 1
+      - id: angelconcert61717.cpuTemperature
+        version: 1
+      - id: angelconcert61717.cpuClock
+        version: 1
+      - id: angelconcert61717.cpuUsage
+        version: 1
+      - id: angelconcert61717.diskUsage
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: ContactSensor
+preferences:
+  - name: rpiAddress
+    title: "RPi 주소 (IP:포트)"
+    description: "대시보드 서버 주소. 예: 192.168.0.17:8080"
+    required: true
+    preferenceType: string
+    definition:
+      stringType: text
+      minLength: 7
+      maxLength: 64
+      default: "192.168.0.17:8080"
+  - name: pollSeconds
+    title: "읽기 주기 (초)"
+    description: "RPi 상태를 읽는 간격"
+    required: false
+    preferenceType: integer
+    definition:
+      minimum: 30
+      maximum: 600
+      default: 60

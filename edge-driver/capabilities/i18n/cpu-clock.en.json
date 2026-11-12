@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "CPU Clock",
+  "attributes": {
+    "cpuClock": {
+      "label": "CPU Clock",
+      "displayTemplate": "{{device.label}} CPU Clock: {{value}} {{unit}}"
+    }
+  }
+}

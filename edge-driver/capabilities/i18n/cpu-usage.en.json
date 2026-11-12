@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "CPU Usage",
+  "attributes": {
+    "cpuUsage": {
+      "label": "CPU Usage",
+      "displayTemplate": "{{device.label}} CPU Usage: {{value}}{{unit}}"
+    }
+  }
+}

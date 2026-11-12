@@ -11,3 +11,5 @@ deploy/stcollector text eol=lf
 *.html text eol=lf
 *.webmanifest text eol=lf
 deploy/cli/xdg-open text eol=lf
+# SmartThings 허브용 Edge 드라이버
+edge-driver/** text eol=lf

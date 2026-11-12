@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 from collections import defaultdict
 
 from .. import __version__
@@ -696,9 +697,12 @@ def _sysmon_rows(ctx: Context, start: int) -> tuple[list[tuple], list[tuple], bo
         return [], [], False
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     try:
+        # cpu_avg, cpu_cores 는 모니터가 새 판으로 재시작해야 생긴다. 웹은 읽기 전용이라 없으면 NULL 로 읽는다.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(minutes)")}
+        extra = ", ".join(c if c in cols else "NULL" for c in ("cpu_avg", "cpu_cores"))
         minutes = conn.execute(
-            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, undervolt_s, overheat_s "
-            "FROM minutes WHERE ts_ms>=? ORDER BY ts_ms", (start,),
+            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, undervolt_s, overheat_s, "
+            f"{extra} FROM minutes WHERE ts_ms>=? ORDER BY ts_ms", (start,),
         ).fetchall()
         events = conn.execute(
             "SELECT id, kind, start_ms, end_ms, seconds, interrupted, temp_c, freq_mhz, load1, procs_json "
@@ -720,6 +724,20 @@ def _cpu_count() -> int:
     return os.cpu_count() or 1
 
 
+def _cores(raw) -> dict[str, float]:
+    """minutes.cpu_cores JSON 을 {코어 번호: 사용률}로. 깨졌거나 없으면 빈 dict."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items()
+            if str(k).isdigit() and isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
 def _mean(values: list):
     return sum(values) / len(values) if values else None
 
@@ -738,7 +756,8 @@ def system(ctx: Context, params: dict) -> dict:
     for p in (current or {}).get("pending") or []:  # 아직 DB에 저장되지 않은 최근 분
         if isinstance(p, dict) and p.get("ts_ms", 0) >= start:
             by_minute[p["ts_ms"]] = (p["ts_ms"], p.get("temp_avg"), p.get("temp_min"), p.get("temp_max"),
-                                     p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0))
+                                     p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0),
+                                     p.get("cpu_avg"), p.get("cpu_cores"))
 
     groups: list[list[tuple]] = [[] for _ in range(bucket_count)]
     for ts, row in by_minute.items():
@@ -753,11 +772,23 @@ def system(ctx: Context, params: dict) -> dict:
             out.append(_r(fn(values), digits) if values else None)
         return out
 
+    # 코어별: {"0": [구간별 평균 또는 null, ...], "1": [...]}. 코어 번호는 숫자 순서
+    core_values: dict[str, list[list[float]]] = {}
+    for i, rows in enumerate(groups):
+        for r in rows:
+            for core, pct in _cores(r[9] if len(r) > 9 else None).items():
+                core_values.setdefault(core, [[] for _ in range(bucket_count)])[i].append(pct)
+    cpu_cores = {core: [_r(_mean(v), 1) if v else None for v in core_values[core]]
+                 for core in sorted(core_values, key=int)}
+
     per_bucket_minutes = bucket_ms // 60000
     series = {
         "buckets": [start + i * bucket_ms for i in range(bucket_count)],
         "temp_avg": column(1, _mean, 1), "temp_min": column(2, min, 1), "temp_max": column(3, max, 1),
         "freq": column(4, _mean, 0), "load": column(5, _mean, 2),
+        "cpu": [_r(_mean(v), 1) if (v := [r[8] for r in rows if len(r) > 8 and r[8] is not None]) else None
+                for rows in groups],
+        "cpu_cores": cpu_cores,
         "undervolt_s": [sum(r[6] or 0 for r in rows) for rows in groups],
         "overheat_s": [sum(r[7] or 0 for r in rows) for rows in groups],
         "coverage": [_r(min(1.0, len(rows) / per_bucket_minutes), 2) if rows else None for rows in groups],
@@ -776,7 +807,7 @@ def system(ctx: Context, params: dict) -> dict:
     view = None
     if current is not None:
         ts = int(current.get("ts_ms", 0))
-        view = {k: current.get(k) for k in ("ts_ms", "temp_c", "freq_mhz", "load1", "mem_total_mb", "mem_avail_mb",
+        view = {k: current.get(k) for k in ("ts_ms", "temp_c", "freq_mhz", "load1", "cpu_pct", "cpu_pct_1m", "cpu_cores", "mem_total_mb", "mem_avail_mb",
                                             "uptime_s", "undervoltage", "disk_free_gb", "disk_total_gb", "capabilities")}
         view["active"] = current.get("active") or []
         view["top"] = current.get("top") or []
@@ -806,6 +837,77 @@ def meta(ctx: Context, params: dict) -> dict:
         "alerts": alerts(ctx),
     }
 
+
+
+# ---- /hub/status: SmartThings 허브용 요약 -----------------------------------------
+# 허브의 Edge 드라이버가 60초마다 읽는다. 로그인 없이 허용 주소에서만 열리므로
+# 기기·방 이름, 오류 문구, 비밀값을 넣지 않는다. 새로 측정하지 않고 저장된 최근 값만 읽는다.
+# 수집 판정 (contact 이상 = open 은 ok=false 일 때):
+#   reauth   SmartThings 재인증 필요                     -> 이상
+#   unknown  수집이 한 번도 성공한 적 없음               -> 이상
+#   stopped  마지막 수집 성공이 30분(STALE_COLLECT_MS) 넘음 -> 이상
+#   history  이력 조회가 10분 넘게 연속 실패 (현재값 임시 수집 중일 수 있음)
+#            -> 60분(HUB_HISTORY_ALERT_MS)을 넘기면 이상, 그 전에는 정상으로 둔다
+#   ok       그 밖
+HUB_HISTORY_ALERT_MS = 60 * 60 * 1000
+HUB_STATE_TEXT = {
+    "ok": "정상", "history": "이력 지연", "stopped": "수집 멈춤", "reauth": "재인증 필요", "unknown": "수집 기록 없음",
+}
+
+
+def _kst_text(ms: int | None) -> str | None:
+    if ms is None:
+        return None
+    t = time.gmtime((ms + KST_OFFSET_MS) // 1000)
+    return f"{t.tm_mon:02d}-{t.tm_mday:02d} {t.tm_hour:02d}:{t.tm_min:02d}"
+
+
+def collect_health(ctx: Context) -> tuple[str, bool, int | None]:
+    """(상태, 정상 여부, 지속 분). 판정 기준은 위 주석."""
+    now = ctx.now_ms
+    if ctx.meta("auth_state") == "reauth_required":
+        return "reauth", False, None
+    last_ok = ctx.meta_int("last_ok_ms")
+    if last_ok is None:
+        return "unknown", False, None
+    if now - last_ok > STALE_COLLECT_MS:
+        return "stopped", False, (now - last_ok) // 60000
+    fail_since = ctx.meta_int("history_fail_since_ms")
+    if fail_since is not None and now - fail_since > STALE_HISTORY_MS:
+        return "history", now - fail_since <= HUB_HISTORY_ALERT_MS, (now - fail_since) // 60000
+    return "ok", True, None
+
+
+def hub_status(ctx: Context) -> dict:
+    state, ok, minutes = collect_health(ctx)
+    text = HUB_STATE_TEXT[state] + (f" {minutes}분" if minutes is not None else "")
+    last_ok = ctx.meta_int("last_ok_ms")
+    current = _sysmon_current(ctx)
+    fresh = current is not None and ctx.now_ms - int(current.get("ts_ms", 0) or 0) <= SYSMON_STALE_MS
+
+    def num(key, digits):
+        value = current.get(key) if fresh else None
+        return _r(float(value), digits) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    try:
+        disk = shutil.disk_usage(ctx.db_path.parent)
+        disk_pct = _r(disk.used / disk.total * 100, 1) if disk.total else None
+    except OSError:
+        disk_pct = None
+    return {
+        "now_ms": ctx.now_ms,
+        "collect_ok": ok,
+        "collect_state": state,
+        "collect_text": text,
+        "last_ok_ms": last_ok,
+        "last_ok_text": _kst_text(last_ok),
+        "cpu_temp_c": num("temp_c", 1),
+        "cpu_mhz": num("freq_mhz", 0),
+        # 최근 1분 평균. 이전 판 모니터의 현재값 파일에는 cpu_pct_1m 이 없어 순간값으로 대신한다.
+        "cpu_pct": num("cpu_pct_1m", 1) if num("cpu_pct_1m", 1) is not None else num("cpu_pct", 1),
+        "disk_used_pct": disk_pct,
+        "sysmon_fresh": fresh,
+    }
 
 # 집계가 바뀌어야 결과가 바뀌는 API (rollup 완료 시각으로 캐시)
 ROLLUP_ROUTES = {"/api/series": series, "/api/lux-dist": lux_dist, "/api/occupancy": occupancy, "/api/plugs": plugs}

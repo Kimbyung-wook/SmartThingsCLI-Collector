@@ -20,7 +20,7 @@
 - Python 코드: 3.11+ 표준 라이브러리만 사용
 - Python 외 실행 의존성: SmartThings CLI 하나(3.0.0, linux-arm64 단일 실행 파일)
 - 나가는 연결: SmartThings 서버로 나가는 HTTPS뿐
-- 들어오는 연결: 집 안 네트워크에서 대시보드와 SSH로 오는 접속뿐
+- 들어오는 연결: 집 안 네트워크에서 대시보드와 SSH로 오는 접속, SmartThings 허브의 `/hub/status` 읽기(설정한 허브 IP만)뿐
 - **CLI 자격증명의 권한: `controller:stCli`, 읽기 전용 아님**
 - 읽기 제한: 수집기 코드의 명령 허용 목록으로 읽기 명령만 실행
 - 허용 목록은 수집기 안의 제한이라 자격증명 파일이 유출되면 막지 못함
@@ -464,6 +464,7 @@ docs/
   OPERATIONS.md    일상 점검, 장애 대응, RPi 미확인 항목
   MIGRATION.md     보드 교체와 복구
   POWER_TEST.md    RPi 전원 시험 결과와 운영 설정
+edge-driver/     SmartThings 허브 Edge 드라이버 (앱에서 RPi 상태 보기, PC에서 패키징)
 tools/           가짜 데이터 생성기
 tests/           단위 테스트
 ```

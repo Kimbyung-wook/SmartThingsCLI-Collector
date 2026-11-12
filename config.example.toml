@@ -100,6 +100,10 @@ password_hash = ""
 # 허용할 접속 대역 (127.0.0.1 은 항상 허용). 방화벽에 더한 2차 방어선이다.
 allowed_networks = ["192.168.0.0/24"]
 session_days = 30
+# SmartThings 허브(Edge 드라이버)가 로그인 없이 GET /hub/status 를 읽을 수 있는 주소.
+# 대역이 아니라 IP 주소 하나씩 적는다. 비워 두면 그 경로는 모두에게 404 다.
+# 공유기에서 허브 IP를 고정(DHCP 예약)한 뒤 넣는다. 자세한 내용: edge-driver/README.md
+hub_status_allow = []
 
 [sysmon]
 # RPi 상태 모니터. sysfs 와 /proc 만 읽고, 수집 DB 와 분리된 sysmon.db 에 저장한다.

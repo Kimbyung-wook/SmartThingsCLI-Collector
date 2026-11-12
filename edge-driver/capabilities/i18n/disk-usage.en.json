@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "Disk Usage",
+  "attributes": {
+    "diskUsage": {
+      "label": "Disk Usage",
+      "displayTemplate": "{{device.label}} Disk Usage: {{value}}{{unit}}"
+    }
+  }
+}

@@ -32,6 +32,10 @@ flowchart LR
 - 수집, 집계, 웹은 서로 직접 호출하지 않고 DB로만 연결
 - 하나가 멈춰도 나머지는 계속 동작
 - 그림에 없는 `stcollector-sysmon`: RPi 상태만 기록, 수집 DB와 분리된 `sysmon.db` 사용
+  - CPU 사용률: `/proc/stat` 첫 줄(cpu 합계)의 직전 표본과의 차이. 쉰 시간은 idle + iowait. `minutes.cpu_avg`(1분 평균)와 현재값 파일의 `cpu_pct`(순간), `cpu_pct_1m`(최근 60초 평균)에 기록
+  - 코어별 CPU 사용률: `/proc/stat`의 `cpuN` 줄마다 같은 방식으로 계산. `minutes.cpu_cores`에 코어 번호를 키로 한 JSON 텍스트(`{"0":12.3,"1":4.5}`)로 1분 평균을 저장. 코어 수가 기기마다 다르고, 오프라인 코어는 줄이 없어 번호가 비므로 위치 배열 대신 번호 키를 씀. 없던 코어가 켜지면 직전 값이 없어 한 표본 뒤부터 나옴
+  - `cpu_avg`, `cpu_cores` 열이 없는 이전 DB는 모니터가 시작할 때 `ALTER TABLE`로 열을 더함. 웹은 읽기 전용이라 열이 없으면 `NULL`로 읽음
+  - `/api/system`: `series.cpu`(구간별 전체 평균), `series.cpu_cores`(`{"0": [구간별 평균 또는 null, ...]}`, 코어 번호 순), `current.cpu_pct`, `cpu_pct_1m`, `cpu_cores`. 대시보드 상태 탭 화면은 아직 load를 표시. `/hub/status`와 드라이버는 전체 사용률만 씀
 
 ## 수집
 
@@ -169,6 +173,7 @@ flowchart LR
   - JSON API
   - 차트는 집계 테이블에서만 조회
   - `readings`는 최신값과 아직 집계되지 않은 오늘 구간의 최대·최소에만 사용
+  - `/hub/status`: SmartThings 허브용 요약 (아래 [허브 상태 경로](#허브-상태-경로-hubstatus))
 - `session.py`
   - scrypt 비밀번호 검증과 서명된 세션 쿠키
   - 세션 키는 비밀번호 해시에서 유도해 재시작해도 유지
@@ -203,6 +208,41 @@ flowchart LR
 | 디스크 부족 | 여유 공간 1GB 미만 |
 | 배터리 부족 | 20% 미만 |
 | 전압 부족, 스로틀링, 과열 | 모니터 현재값이 30초 안에 갱신됐고 해당 상태가 진행 중 |
+
+### 허브 상태 경로 (`/hub/status`)
+
+- 용도: SmartThings Hub V3의 Edge 드라이버([edge-driver/](../edge-driver/README.md))가 60초마다 읽어 SmartThings 앱 기기로 표시
+- 접근: 로그인 없음. `[web] hub_status_allow`에 적힌 IP 주소만 200, 그 밖과 목록이 빈 경우 404. `allowed_networks` 검사보다 먼저 판정
+- 방식: GET·HEAD만, 캐시 없음(`Cache-Control: no-store`). 새로 측정하지 않고 수집 DB `meta`, 모니터 현재값 파일, `shutil.disk_usage`만 읽음
+- 응답에 넣지 않는 것: 기기·방 이름, 위치 ID, 오류 문구(`last_error`), 비밀값
+- 생성 위치: `api.hub_status()`, 판정은 `api.collect_health()`
+
+```json
+{"now_ms":1763010300000,"collect_ok":true,"collect_state":"ok","collect_text":"정상",
+ "last_ok_ms":1763010000000,"last_ok_text":"11-13 14:00","cpu_temp_c":52.6,"cpu_mhz":900.0,
+ "cpu_pct":12.4,"disk_used_pct":76.2,"sysmon_fresh":true}
+```
+
+| 필드 | 출처 |
+|---|---|
+| `collect_ok`, `collect_state`, `collect_text` | 아래 판정 |
+| `last_ok_ms`, `last_ok_text` | `meta.last_ok_ms`, 글자는 KST `월-일 시:분` |
+| `cpu_temp_c`, `cpu_mhz`, `cpu_pct` | 모니터 현재값. 30초 넘게 갱신되지 않았으면 `null`, `sysmon_fresh = false` |
+| `cpu_pct` | CPU 사용률 %, 최근 60초 표본 평균(`cpu_pct_1m`). 이전 판 모니터의 현재값이면 5초 순간값 |
+| `disk_used_pct` | DB가 있는 파일 시스템의 사용률 |
+
+수집 판정 (위에서부터 먼저 맞는 것)
+
+| `collect_state` | 조건 | `collect_ok` |
+|---|---|---|
+| `reauth` | `auth_state = reauth_required` | false |
+| `unknown` | `last_ok_ms` 없음 | false |
+| `stopped` | 마지막 수집 성공 후 30분 초과 | false |
+| `history` | 이력 조회 연속 실패가 10분 초과 | 60분 이하 true, 초과 false |
+| `ok` | 그 밖 | true |
+
+- 30분, 10분은 화면 상단 경고와 같은 기준. 이력 실패 중에도 현재값은 임시 수집되므로 1시간까지는 이상으로 보지 않음
+- 앱의 `contactSensor`는 `collect_ok = false`이면 열림. 허브가 3회 연속 못 읽어도 열림(드라이버 판정)
 
 ## DB 테이블
 
@@ -288,6 +328,7 @@ flowchart LR
     subgraph lan["집 안 네트워크"]
         browser["브라우저"]
         pc["PC의 SSH"]
+        hub["SmartThings 허브"]
     end
     subgraph rpi["Raspberry Pi"]
         fw["ufw 기본 거부<br/>집 안 대역의 22, 8080만 허용"]
@@ -303,6 +344,7 @@ flowchart LR
     outsider -.->|"포트포워딩 없음, 웹훅 없음"| fw
     browser --> fw
     pc --> fw
+    hub -->|"GET /hub/status만"| fw
     fw --> web
     web -->|"읽기 전용"| db
     collector --> db
@@ -315,6 +357,7 @@ flowchart LR
 |---|---|---|
 | 인터넷 → RPi | 포트포워딩 없음, 웹훅 없음, `ufw` 기본 거부 | 운영 설정에 의존, 코드가 강제하지 않음 |
 | 집 안 네트워크 → 대시보드 | `ufw`, 앱의 `allowed_networks`, 웹 서비스의 `IPAddressAllow`, 비밀번호 | HTTP라서 비밀번호와 쿠키가 집 안 네트워크에서 암호화되지 않음. 쿠키에 `Secure` 적용 불가 |
+| SmartThings 허브 → `/hub/status` | `hub_status_allow`에 적은 IP만, 읽기 전용 GET, 이름·오류 문구·비밀값 없는 요약 | 로그인 없음. 허브 IP를 다른 기기가 쓰면 같은 요약을 볼 수 있음 (공유기에서 허브 IP 고정) |
 | 대시보드 로그인 | scrypt, IP별 5회 실패 시 5분 차단, `HttpOnly`·`SameSite=Lax` 쿠키, POST `Origin` 검사, 자체 출처만 허용하는 CSP | 로그인 전 접근 가능 범위는 로그인 화면, CSS, manifest, 아이콘 |
 | 수집기 → 기기 제어 | `ALLOWED_COMMANDS` 허용 목록 | 수집기 안의 제한. 자격증명 파일 유출 시 차단 불가 |
 | CLI 자격증명 파일 | `stcollector` 계정 전용 (파일 600, 폴더 700) | 권한은 `controller:stCli`로 제어까지 가능. 웹과 집계도 같은 계정으로 동작, sudo 사용자는 읽기 가능 |

@@ -1,0 +1,30 @@
+{
+  "name": "CPU Clock",
+  "attributes": {
+    "cpuClock": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "MHz"
+            ],
+            "default": "MHz"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "value"
+        ]
+      },
+      "enumCommands": []
+    }
+  },
+  "commands": {}
+}

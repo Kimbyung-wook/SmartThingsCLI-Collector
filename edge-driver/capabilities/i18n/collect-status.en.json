@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "Collect Status",
+  "attributes": {
+    "collectStatus": {
+      "label": "Collect Status",
+      "displayTemplate": "{{device.label}} Collect Status: {{value}}"
+    }
+  }
+}

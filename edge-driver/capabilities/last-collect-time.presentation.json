@@ -1,0 +1,34 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{lastCollectTime.value}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "{{i18n.label}}",
+      "displayType": "state",
+      "state": {
+        "label": "{{lastCollectTime.value}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "{{i18n.label}}",
+        "displayType": "textField",
+        "textField": {
+          "value": "lastCollectTime.value",
+          "valueType": "string"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.lastCollectTime",
+  "version": 1
+}

@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "CPU 온도",
+  "attributes": {
+    "cpuTemperature": {
+      "label": "CPU 온도",
+      "displayTemplate": "{{device.label}} CPU 온도: {{value}}°{{unit}}"
+    }
+  }
+}
