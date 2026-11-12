@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "수집 상태",
+  "attributes": {
+    "collectStatus": {
+      "label": "수집 상태",
+      "displayTemplate": "{{device.label}} 수집 상태: {{value}}"
+    }
+  }
+}

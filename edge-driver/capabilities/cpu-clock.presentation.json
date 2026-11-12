@@ -2,29 +2,29 @@
   "dashboard": {
     "states": [
       {
-        "label": "{{clockSpeed.value}} {{clockSpeed.unit}}"
+        "label": "{{cpuClock.value}} {{cpuClock.unit}}"
       }
     ],
     "actions": []
   },
   "detailView": [
     {
-      "label": "CPU 클럭",
+      "label": "{{i18n.label}}",
       "displayType": "state",
       "state": {
-        "label": "{{clockSpeed.value}} {{clockSpeed.unit}}"
+        "label": "{{cpuClock.value}} {{cpuClock.unit}}"
       }
     }
   ],
   "automation": {
     "conditions": [
       {
-        "label": "CPU 클럭",
+        "label": "{{i18n.label}}",
         "displayType": "numberField",
         "numberField": {
-          "value": "clockSpeed.value",
+          "value": "cpuClock.value",
           "valueType": "number",
-          "unit": "clockSpeed.unit",
+          "unit": "cpuClock.unit",
           "range": [
             0,
             5000
@@ -34,6 +34,6 @@
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piClockSpeed",
+  "id": "angelconcert61717.cpuClock",
   "version": 1
 }

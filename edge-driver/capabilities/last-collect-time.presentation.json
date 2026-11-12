@@ -2,33 +2,33 @@
   "dashboard": {
     "states": [
       {
-        "label": "{{lastCollect.value}}"
+        "label": "{{lastCollectTime.value}}"
       }
     ],
     "actions": []
   },
   "detailView": [
     {
-      "label": "마지막 수집",
+      "label": "{{i18n.label}}",
       "displayType": "state",
       "state": {
-        "label": "{{lastCollect.value}}"
+        "label": "{{lastCollectTime.value}}"
       }
     }
   ],
   "automation": {
     "conditions": [
       {
-        "label": "마지막 수집",
+        "label": "{{i18n.label}}",
         "displayType": "textField",
         "textField": {
-          "value": "lastCollect.value",
+          "value": "lastCollectTime.value",
           "valueType": "string"
         }
       }
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piLastCollect",
+  "id": "angelconcert61717.lastCollectTime",
   "version": 1
 }

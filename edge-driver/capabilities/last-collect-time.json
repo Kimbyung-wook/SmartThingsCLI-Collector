@@ -1,7 +1,7 @@
 {
-  "name": "Pi Last Collect",
+  "name": "Last Collect Time",
   "attributes": {
-    "lastCollect": {
+    "lastCollectTime": {
       "schema": {
         "type": "object",
         "properties": {

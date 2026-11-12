@@ -1,21 +1,13 @@
 {
-  "name": "Pi Disk Usage",
+  "name": "Collect Status",
   "attributes": {
-    "diskUsage": {
+    "collectStatus": {
       "schema": {
         "type": "object",
         "properties": {
           "value": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
-          "unit": {
             "type": "string",
-            "enum": [
-              "%"
-            ],
-            "default": "%"
+            "maxLength": 64
           }
         },
         "additionalProperties": false,

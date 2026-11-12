@@ -43,6 +43,22 @@ class EdgeDriverFilesTests(unittest.TestCase):
             self.assertIn(f'capabilities[NS .. ".{cap_id}"]', self.lua)
             self.assertRegex(self.lua, rf"\.{attr}\(\{{ value = v")
 
+    def test_translations_exist_for_english_and_korean(self):
+        expected_ko = {"CPU Temperature": "CPU 온도", "CPU Clock": "CPU 클럭", "CPU Usage": "CPU 사용률",
+                       "Collect Status": "수집 상태", "Last Collect Time": "마지막 수집 시각", "Disk Usage": "디스크 사용량"}
+        names = set()
+        for path, cap in self.caps.items():
+            (attr,) = cap["attributes"]
+            self.assertEqual(attr, camel(cap["name"]))  # 속성 이름 = capability id
+            names.add(cap["name"])
+            pres = path.with_name(path.stem + ".presentation.json").read_text("utf-8")
+            self.assertIn("{{i18n.label}}", pres)
+            for tag, label in (("en", cap["name"]), ("ko", expected_ko[cap["name"]])):
+                tr = json.loads((ROOT / "capabilities" / "i18n" / f"{path.stem}.{tag}.json").read_text("utf-8"))
+                self.assertEqual((tr["tag"], tr["label"]), (tag, label))
+                self.assertEqual(tr["attributes"][attr]["label"], label)
+        self.assertEqual(names, set(expected_ko))
+
     def test_profile_name_used_by_lua(self):
         name = re.search(r"^name: (\S+)$", self.profile, re.M).group(1)
         self.assertIn(f'PROFILE = "{name}"', self.lua)
@@ -61,7 +77,7 @@ class EdgeDriverFilesTests(unittest.TestCase):
     def test_cpu_temperature_is_custom_with_wide_range(self):
         self.assertNotIn("- id: temperatureMeasurement", self.profile)
         self.assertNotIn("temperatureMeasurement", self.lua)
-        cap = json.loads((ROOT / "capabilities" / "pi-cpu-temperature.json").read_text("utf-8"))
+        cap = json.loads((ROOT / "capabilities" / "cpu-temperature.json").read_text("utf-8"))
         value = cap["attributes"]["cpuTemperature"]["schema"]["properties"]["value"]
         self.assertLessEqual(value["minimum"], -20)
         self.assertGreaterEqual(value["maximum"], 125)

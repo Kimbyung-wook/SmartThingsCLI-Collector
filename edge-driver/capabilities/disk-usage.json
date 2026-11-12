@@ -1,7 +1,7 @@
 {
-  "name": "Pi Cpu Usage",
+  "name": "Disk Usage",
   "attributes": {
-    "cpuUsage": {
+    "diskUsage": {
       "schema": {
         "type": "object",
         "properties": {

@@ -8,16 +8,20 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
 
 ## 앱에 보이는 항목
 
-| 항목 | capability | 속성 | 값 |
-|---|---|---|---|
-| 수집 이상 알림 | `contactSensor` (표준) | `contact` | 닫힘 = 정상, 열림 = 이상 |
-| CPU 온도 | `<namespace>.piCpuTemperature` | `cpuTemperature` | °C, 범위 -20~125 |
-| SmartThings 수집 | `<namespace>.piCollectStatus` | `collectStatus` | `정상`, `이력 지연 20분`, `수집 멈춤 45분`, `재인증 필요`, `수집 기록 없음`, `RPi 응답 없음` |
-| 마지막 수집 | `<namespace>.piLastCollect` | `lastCollect` | `11-13 14:05` (KST, 월-일 시:분) |
-| CPU 클럭 | `<namespace>.piClockSpeed` | `clockSpeed` | MHz |
-| CPU 사용률 | `<namespace>.piCpuUsage` | `cpuUsage` | %, 최근 1분 평균 |
-| 디스크 사용 | `<namespace>.piDiskUsage` | `diskUsage` | % (DB가 있는 파일 시스템) |
-| 새로고침 | `refresh` (표준) | — | 아래로 당기면 바로 한 번 읽음 |
+| 앱 이름 (한국어) | 영문 이름 | capability | 속성 | 값 |
+|---|---|---|---|---|
+| 열림/닫힘 (기기 대표 상태) | Contact | `contactSensor` (표준) | `contact` | 닫힘 = 수집 정상, 열림 = 이상 |
+| CPU 온도 | CPU Temperature | `<namespace>.cpuTemperature` | `cpuTemperature` | °C, 범위 -20~125 |
+| CPU 클럭 | CPU Clock | `<namespace>.cpuClock` | `cpuClock` | MHz |
+| CPU 사용률 | CPU Usage | `<namespace>.cpuUsage` | `cpuUsage` | %, 최근 1분 평균 |
+| 수집 상태 | Collect Status | `<namespace>.collectStatus` | `collectStatus` | `정상`, `이력 지연 20분`, `수집 멈춤 45분`, `재인증 필요`, `수집 기록 없음`, `RPi 응답 없음` |
+| 마지막 수집 시각 | Last Collect Time | `<namespace>.lastCollectTime` | `lastCollectTime` | `11-13 14:05` (KST, 월-일 시:분) |
+| 디스크 사용량 | Disk Usage | `<namespace>.diskUsage` | `diskUsage` | % (DB가 있는 파일 시스템) |
+| 새로고침 | Refresh | `refresh` (표준) | — | 아래로 당기면 바로 한 번 읽음 |
+
+- 커스텀 capability의 id는 `capabilities:create`가 영문 이름(name)에서 만든다. 첫 단어는 모두 소문자, 다음 단어는 첫 글자만 대문자다 (사용자 시험: `CPU Clock Test` → `cpuClockTest`). 속성 이름도 id와 같게 했다.
+- 앱의 한국어 이름은 capability 번역 파일(`capabilities/i18n/*.ko.json`)에서 온다. presentation에는 영문 문구와 `{{i18n.label}}` 참조만 두었다. 아래 [항목 이름과 한국어](#항목-이름과-한국어) 참고.
+- 표준 `contactSensor`의 이름(열림/닫힘)은 앱이 정한다.
 
 - 열림(이상)이 되는 경우
   - RPi 판정: 아래 [수집 정상 판정](#수집-정상-판정)에서 이상
@@ -45,6 +49,19 @@ RPi의 `stcollector/web/api.py`의 `collect_health()`가 수집 DB의 `meta` 값
 - 30분, 10분은 대시보드 상단 경고와 같은 기준이다.
 - 이력 지연은 대개 SmartThings 서버 쪽 일시 오류다. 그동안 현재값을 임시로 받고 회복되면 밀린 이력을 다시 받으므로 1시간까지는 알림을 보내지 않는다.
 
+## 항목 이름과 한국어
+
+- 공식 문서의 방법: presentation에는 영문 문구나 `{{i18n.label}}` 같은 참조를 두고, 언어별 이름은 capability 번역 파일(`tag: "ko"`)로 올린다. 앱은 휴대폰 언어 설정에 맞는 번역을 보여 준다 ([Capability Translations](https://developer.smartthings.com/docs/devices/capabilities/capability-translations), [Capability Presentations](https://developer.smartthings.com/docs/devices/capabilities/capability-presentations)).
+- presentation JSON에 한국어를 직접 적는 것은 문서에 허용·금지 어느 쪽도 없다. 확인된 방법이 번역 파일이라 그쪽을 택했다.
+- 번역 파일 모양 (`capabilities/i18n/cpu-clock.ko.json`)
+
+```json
+{"tag": "ko", "label": "CPU 클럭",
+ "attributes": {"cpuClock": {"label": "CPU 클럭", "displayTemplate": "{{device.label}} CPU 클럭: {{value}} {{unit}}"}}}
+```
+
+- 미확인: 번역 태그가 `ko`인지 `ko-KR`인지, 한국어 번역이 없을 때 영어로 돌아가는지, `en` 번역이 꼭 있어야 하는지, `displayTemplate`이 어디에 쓰이는지(기록 화면으로 추정).
+
 ## 준비물
 
 - PC에 SmartThings CLI 설치와 로그인 (`smartthings` 명령). 로그인은 사용자가 직접 한다.
@@ -62,27 +79,44 @@ $NS = "<namespace>"
 ### 1. 커스텀 capability 6개 만들기
 
 ```powershell
-smartthings capabilities:create -i edge-driver/capabilities/pi-collect-status.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-last-collect.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-cpu-temperature.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-clock-speed.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-cpu-usage.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-disk-usage.json
+smartthings capabilities:create -i edge-driver/capabilities/cpu-temperature.json
+smartthings capabilities:create -i edge-driver/capabilities/cpu-clock.json
+smartthings capabilities:create -i edge-driver/capabilities/cpu-usage.json
+smartthings capabilities:create -i edge-driver/capabilities/collect-status.json
+smartthings capabilities:create -i edge-driver/capabilities/last-collect-time.json
+smartthings capabilities:create -i edge-driver/capabilities/disk-usage.json
 ```
 
-- 결과의 id가 `<namespace>.piCollectStatus`, `piLastCollect`, `piCpuTemperature`, `piClockSpeed`, `piCpuUsage`, `piDiskUsage`인지 확인한다. 다르면 프로파일·Lua·presentation의 id를 결과에 맞춘다.
-- 앞서 시험으로 만든 `cpuClockTest`는 쓰지 않는다.
+- 결과의 id가 `<namespace>.cpuTemperature`, `cpuClock`, `cpuUsage`, `collectStatus`, `lastCollectTime`, `diskUsage`인지 확인한다. 다르면 프로파일·Lua·presentation·번역 파일의 id를 결과에 맞춘다.
+- 앞서 시험으로 만든 `cpuClockTest`는 쓰지 않는다. 이번 `cpuClock`과 이름이 다르므로 겹치지 않는다.
 
 ### 2. capability presentation 6개 만들기
 
 ```powershell
-smartthings capabilities:presentation:create "$NS.piCollectStatus" 1 -i edge-driver/capabilities/pi-collect-status.presentation.json
-smartthings capabilities:presentation:create "$NS.piLastCollect" 1 -i edge-driver/capabilities/pi-last-collect.presentation.json
-smartthings capabilities:presentation:create "$NS.piCpuTemperature" 1 -i edge-driver/capabilities/pi-cpu-temperature.presentation.json
-smartthings capabilities:presentation:create "$NS.piClockSpeed" 1 -i edge-driver/capabilities/pi-clock-speed.presentation.json
-smartthings capabilities:presentation:create "$NS.piCpuUsage" 1 -i edge-driver/capabilities/pi-cpu-usage.presentation.json
-smartthings capabilities:presentation:create "$NS.piDiskUsage" 1 -i edge-driver/capabilities/pi-disk-usage.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuTemperature" 1 -i edge-driver/capabilities/cpu-temperature.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuClock" 1 -i edge-driver/capabilities/cpu-clock.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuUsage" 1 -i edge-driver/capabilities/cpu-usage.presentation.json
+smartthings capabilities:presentation:create "$NS.collectStatus" 1 -i edge-driver/capabilities/collect-status.presentation.json
+smartthings capabilities:presentation:create "$NS.lastCollectTime" 1 -i edge-driver/capabilities/last-collect-time.presentation.json
+smartthings capabilities:presentation:create "$NS.diskUsage" 1 -i edge-driver/capabilities/disk-usage.presentation.json
 ```
+
+### 2-1. 번역 올리기 (영어, 한국어)
+
+capability마다 영어와 한국어 번역을 하나씩 올린다. 휴대폰 언어가 한국어면 한국어 이름이 보인다.
+
+```powershell
+$files = @{ cpuTemperature = "cpu-temperature"; cpuClock = "cpu-clock"; cpuUsage = "cpu-usage";
+            collectStatus = "collect-status"; lastCollectTime = "last-collect-time"; diskUsage = "disk-usage" }
+foreach ($id in $files.Keys) {
+  foreach ($tag in "en", "ko") {
+    smartthings capabilities:translation:upsert "$NS.$id" 1 -i "edge-driver/capabilities/i18n/$($files[$id]).$tag.json"
+  }
+}
+```
+
+- 명령 이름은 공식 문서 표기(`capabilities:translation:upsert`, 단수)를 따랐다. 버전 인자 `1`이 필요한지는 확인 못 했다. 오류가 나면 `smartthings capabilities:translation:upsert --help`로 인자를 확인한다.
+- 번역을 올리지 않으면 상세 화면과 루틴의 항목 이름이 비거나 `{{i18n.label}}` 그대로 보일 수 있다 (미확인).
 
 ### 3. 채널 만들기 (처음 한 번)
 
@@ -171,6 +205,7 @@ sudo systemctl restart stcollector-web
 | `src/init.lua` | 기기 생성, 주기 읽기, 이벤트 보내기 |
 | `capabilities/*.json` | 커스텀 capability 정의 |
 | `capabilities/*.presentation.json` | 앱 표시 방식 (대시보드, 상세 화면, 루틴 조건) |
+| `capabilities/i18n/*.{en,ko}.json` | 항목 이름 번역 (영어, 한국어) |
 
 `tests/test_edge_driver.py`가 capability 이름에서 만든 id, presentation id, 프로파일, Lua의 이름이 서로 맞는지와 Lua가 읽는 응답 필드가 `/hub/status`에 있는지 확인한다. Lua 자체는 PC에서 실행해 보지 않았다.
 
@@ -192,7 +227,7 @@ sudo systemctl restart stcollector-web
 - JSON 모듈 경로: 문서에 경로가 없다. `st.json`을 먼저 쓰고 없으면 `dkjson`을 쓰게 했다.
 - 커스텀 capability의 숫자 속성에 `unit`을 두는 스키마: 표준 capability와 같은 모양(`unit`에 `enum`)으로 썼다. 공식 예제는 문자열 속성만 있었다. CPU 온도 단위는 `C`로 두고 표시 형식에서 `°`를 붙였다(`52.6°C`로 보일 것으로 추정).
 - presentation의 `detailView` `displayType: "state"`와 `state.label`, 루틴 조건의 `numberField`·`textField` 세부 키: 문서의 표시 형식 목록에는 있으나 예제로는 확인 못 했다. 생성 명령이 거부하면 오류 문구에 맞춰 고친다.
-- presentation 라벨의 한글: 그대로 표시될 것으로 본다. 깨지면 영문으로 바꾼다.
+- 한국어 이름: 번역 파일로 올리는 방식은 문서에 있으나 실제 앱에서 보지 못했다. 위 [항목 이름과 한국어](#항목-이름과-한국어)의 미확인 항목 참고.
 - 프로파일의 `metadata`(`vid`, `mnmn`): 넣지 않았다. 위 커뮤니티 드라이버들도 넣지 않았다. 그래도 앱 상세 화면에 커스텀 항목이 안 보이면 device configuration을 만들어 `vid`를 넣어야 할 수 있다.
 - 설정 이름 길이 제한, `edge:channels:create`의 옵션: 확인 못 했다. 위 명령은 대화형으로 쓰는 것을 전제로 했다.
 - `try_create_device`를 discovery 안에서 바로 부르는 방식은 문서의 함수 정의와 예제에 맞지만, LAN 검색 없이 쓰는 공식 예제는 찾지 못했다.

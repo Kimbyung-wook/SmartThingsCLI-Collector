@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "마지막 수집 시각",
+  "attributes": {
+    "lastCollectTime": {
+      "label": "마지막 수집 시각",
+      "displayTemplate": "{{device.label}} 마지막 수집 시각: {{value}}"
+    }
+  }
+}

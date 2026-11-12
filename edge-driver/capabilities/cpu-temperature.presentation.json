@@ -2,38 +2,38 @@
   "dashboard": {
     "states": [
       {
-        "label": "{{diskUsage.value}}{{diskUsage.unit}}"
+        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
       }
     ],
     "actions": []
   },
   "detailView": [
     {
-      "label": "디스크 사용",
+      "label": "{{i18n.label}}",
       "displayType": "state",
       "state": {
-        "label": "{{diskUsage.value}}{{diskUsage.unit}}"
+        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
       }
     }
   ],
   "automation": {
     "conditions": [
       {
-        "label": "디스크 사용",
+        "label": "{{i18n.label}}",
         "displayType": "numberField",
         "numberField": {
-          "value": "diskUsage.value",
+          "value": "cpuTemperature.value",
           "valueType": "number",
-          "unit": "diskUsage.unit",
+          "unit": "cpuTemperature.unit",
           "range": [
-            0,
-            100
+            -20,
+            125
           ]
         }
       }
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piDiskUsage",
+  "id": "angelconcert61717.cpuTemperature",
   "version": 1
 }

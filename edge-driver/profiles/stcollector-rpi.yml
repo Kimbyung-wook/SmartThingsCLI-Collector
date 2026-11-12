@@ -7,17 +7,17 @@ components:
     capabilities:
       - id: contactSensor
         version: 1
-      - id: angelconcert61717.piCollectStatus
+      - id: angelconcert61717.collectStatus
         version: 1
-      - id: angelconcert61717.piLastCollect
+      - id: angelconcert61717.lastCollectTime
         version: 1
-      - id: angelconcert61717.piCpuTemperature
+      - id: angelconcert61717.cpuTemperature
         version: 1
-      - id: angelconcert61717.piClockSpeed
+      - id: angelconcert61717.cpuClock
         version: 1
-      - id: angelconcert61717.piCpuUsage
+      - id: angelconcert61717.cpuUsage
         version: 1
-      - id: angelconcert61717.piDiskUsage
+      - id: angelconcert61717.diskUsage
         version: 1
       - id: refresh
         version: 1

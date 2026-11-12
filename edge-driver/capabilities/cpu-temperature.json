@@ -1,21 +1,21 @@
 {
-  "name": "Pi Clock Speed",
+  "name": "CPU Temperature",
   "attributes": {
-    "clockSpeed": {
+    "cpuTemperature": {
       "schema": {
         "type": "object",
         "properties": {
           "value": {
             "type": "number",
-            "minimum": 0,
-            "maximum": 5000
+            "minimum": -20,
+            "maximum": 125
           },
           "unit": {
             "type": "string",
             "enum": [
-              "MHz"
+              "C"
             ],
-            "default": "MHz"
+            "default": "C"
           }
         },
         "additionalProperties": false,

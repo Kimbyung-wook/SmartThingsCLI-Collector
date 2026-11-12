@@ -1,0 +1,10 @@
+{
+  "tag": "ko",
+  "label": "CPU 사용률",
+  "attributes": {
+    "cpuUsage": {
+      "label": "CPU 사용률",
+      "displayTemplate": "{{device.label}} CPU 사용률: {{value}}{{unit}}"
+    }
+  }
+}

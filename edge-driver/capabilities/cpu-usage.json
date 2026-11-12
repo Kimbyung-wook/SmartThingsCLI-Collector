@@ -1,21 +1,21 @@
 {
-  "name": "Pi Cpu Temperature",
+  "name": "CPU Usage",
   "attributes": {
-    "cpuTemperature": {
+    "cpuUsage": {
       "schema": {
         "type": "object",
         "properties": {
           "value": {
             "type": "number",
-            "minimum": -20,
-            "maximum": 125
+            "minimum": 0,
+            "maximum": 100
           },
           "unit": {
             "type": "string",
             "enum": [
-              "C"
+              "%"
             ],
-            "default": "C"
+            "default": "%"
           }
         },
         "additionalProperties": false,

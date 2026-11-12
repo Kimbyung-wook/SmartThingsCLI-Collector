@@ -2,38 +2,38 @@
   "dashboard": {
     "states": [
       {
-        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
       }
     ],
     "actions": []
   },
   "detailView": [
     {
-      "label": "CPU 온도",
+      "label": "{{i18n.label}}",
       "displayType": "state",
       "state": {
-        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
       }
     }
   ],
   "automation": {
     "conditions": [
       {
-        "label": "CPU 온도",
+        "label": "{{i18n.label}}",
         "displayType": "numberField",
         "numberField": {
-          "value": "cpuTemperature.value",
+          "value": "cpuUsage.value",
           "valueType": "number",
-          "unit": "cpuTemperature.unit",
+          "unit": "cpuUsage.unit",
           "range": [
-            -20,
-            125
+            0,
+            100
           ]
         }
       }
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piCpuTemperature",
+  "id": "angelconcert61717.cpuUsage",
   "version": 1
 }

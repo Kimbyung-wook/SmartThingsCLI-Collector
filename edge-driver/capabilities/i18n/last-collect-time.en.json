@@ -1,0 +1,10 @@
+{
+  "tag": "en",
+  "label": "Last Collect Time",
+  "attributes": {
+    "lastCollectTime": {
+      "label": "Last Collect Time",
+      "displayTemplate": "{{device.label}} Last Collect Time: {{value}}"
+    }
+  }
+}

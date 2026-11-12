@@ -23,12 +23,12 @@ do
 end
 
 local NS = "angelconcert61717"
-local capCollect = capabilities[NS .. ".piCollectStatus"]
-local capLast = capabilities[NS .. ".piLastCollect"]
-local capTemp = capabilities[NS .. ".piCpuTemperature"]
-local capClock = capabilities[NS .. ".piClockSpeed"]
-local capCpu = capabilities[NS .. ".piCpuUsage"]
-local capDisk = capabilities[NS .. ".piDiskUsage"]
+local capCollect = capabilities[NS .. ".collectStatus"]
+local capLast = capabilities[NS .. ".lastCollectTime"]
+local capTemp = capabilities[NS .. ".cpuTemperature"]
+local capClock = capabilities[NS .. ".cpuClock"]
+local capCpu = capabilities[NS .. ".cpuUsage"]
+local capDisk = capabilities[NS .. ".diskUsage"]
 
 local DEVICE_NETWORK_ID = "stcollector-rpi-status"
 local PROFILE = "stcollector-rpi.v1"
@@ -130,11 +130,11 @@ local function poll(device)
     emit_changed(device, "collect", data.collect_text, nil, function(v) return capCollect.collectStatus({ value = v }) end)
   end
   emit_changed(device, "last", type(data.last_ok_text) == "string" and data.last_ok_text or "-", nil,
-    function(v) return capLast.lastCollect({ value = v }) end)
+    function(v) return capLast.lastCollectTime({ value = v }) end)
   emit_changed(device, "temp", num(data.cpu_temp_c), 0.5,
     function(v) return capTemp.cpuTemperature({ value = v, unit = "C" }) end)
   emit_changed(device, "clock", num(data.cpu_mhz), 1,
-    function(v) return capClock.clockSpeed({ value = v, unit = "MHz" }) end)
+    function(v) return capClock.cpuClock({ value = v, unit = "MHz" }) end)
   emit_changed(device, "cpu", num(data.cpu_pct), 5,
     function(v) return capCpu.cpuUsage({ value = v, unit = "%" }) end)
   emit_changed(device, "disk", num(data.disk_used_pct), 0.5,

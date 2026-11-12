@@ -9,7 +9,7 @@
   },
   "detailView": [
     {
-      "label": "SmartThings 수집",
+      "label": "{{i18n.label}}",
       "displayType": "state",
       "state": {
         "label": "{{collectStatus.value}}"
@@ -19,7 +19,7 @@
   "automation": {
     "conditions": [
       {
-        "label": "SmartThings 수집",
+        "label": "{{i18n.label}}",
         "displayType": "textField",
         "textField": {
           "value": "collectStatus.value",
@@ -29,6 +29,6 @@
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piCollectStatus",
+  "id": "angelconcert61717.collectStatus",
   "version": 1
 }

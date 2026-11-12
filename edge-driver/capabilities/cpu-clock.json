@@ -1,13 +1,21 @@
 {
-  "name": "Pi Collect Status",
+  "name": "CPU Clock",
   "attributes": {
-    "collectStatus": {
+    "cpuClock": {
       "schema": {
         "type": "object",
         "properties": {
           "value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 5000
+          },
+          "unit": {
             "type": "string",
-            "maxLength": 64
+            "enum": [
+              "MHz"
+            ],
+            "default": "MHz"
           }
         },
         "additionalProperties": false,
