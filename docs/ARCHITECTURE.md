@@ -33,7 +33,9 @@ flowchart LR
 - 하나가 멈춰도 나머지는 계속 동작
 - 그림에 없는 `stcollector-sysmon`: RPi 상태만 기록, 수집 DB와 분리된 `sysmon.db` 사용
   - CPU 사용률: `/proc/stat` 첫 줄(cpu 합계)의 직전 표본과의 차이. 쉰 시간은 idle + iowait. `minutes.cpu_avg`(1분 평균)와 현재값 파일의 `cpu_pct`(순간), `cpu_pct_1m`(최근 60초 평균)에 기록
-  - `cpu_avg` 열이 없는 이전 DB는 모니터가 시작할 때 `ALTER TABLE`로 열을 더함. 대시보드 상태 탭은 그대로 load를 표시
+  - 코어별 CPU 사용률: `/proc/stat`의 `cpuN` 줄마다 같은 방식으로 계산. `minutes.cpu_cores`에 코어 번호를 키로 한 JSON 텍스트(`{"0":12.3,"1":4.5}`)로 1분 평균을 저장. 코어 수가 기기마다 다르고, 오프라인 코어는 줄이 없어 번호가 비므로 위치 배열 대신 번호 키를 씀. 없던 코어가 켜지면 직전 값이 없어 한 표본 뒤부터 나옴
+  - `cpu_avg`, `cpu_cores` 열이 없는 이전 DB는 모니터가 시작할 때 `ALTER TABLE`로 열을 더함. 웹은 읽기 전용이라 열이 없으면 `NULL`로 읽음
+  - `/api/system`: `series.cpu`(구간별 전체 평균), `series.cpu_cores`(`{"0": [구간별 평균 또는 null, ...]}`, 코어 번호 순), `current.cpu_pct`, `cpu_pct_1m`, `cpu_cores`. 대시보드 상태 탭 화면은 아직 load를 표시. `/hub/status`와 드라이버는 전체 사용률만 씀
 
 ## 수집
 

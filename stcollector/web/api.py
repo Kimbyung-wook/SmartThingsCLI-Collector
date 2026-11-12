@@ -696,9 +696,12 @@ def _sysmon_rows(ctx: Context, start: int) -> tuple[list[tuple], list[tuple], bo
         return [], [], False
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     try:
+        # cpu_avg, cpu_cores 는 모니터가 새 판으로 재시작해야 생긴다. 웹은 읽기 전용이라 없으면 NULL 로 읽는다.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(minutes)")}
+        extra = ", ".join(c if c in cols else "NULL" for c in ("cpu_avg", "cpu_cores"))
         minutes = conn.execute(
-            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, undervolt_s, overheat_s "
-            "FROM minutes WHERE ts_ms>=? ORDER BY ts_ms", (start,),
+            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, undervolt_s, overheat_s, "
+            f"{extra} FROM minutes WHERE ts_ms>=? ORDER BY ts_ms", (start,),
         ).fetchall()
         events = conn.execute(
             "SELECT id, kind, start_ms, end_ms, seconds, interrupted, temp_c, freq_mhz, load1, procs_json "
@@ -709,6 +712,20 @@ def _sysmon_rows(ctx: Context, start: int) -> tuple[list[tuple], list[tuple], bo
     finally:
         conn.close()
     return minutes, events, True
+
+
+def _cores(raw) -> dict[str, float]:
+    """minutes.cpu_cores JSON 을 {코어 번호: 사용률}로. 깨졌거나 없으면 빈 dict."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items()
+            if str(k).isdigit() and isinstance(v, (int, float)) and not isinstance(v, bool)}
 
 
 def _mean(values: list):
@@ -729,7 +746,8 @@ def system(ctx: Context, params: dict) -> dict:
     for p in (current or {}).get("pending") or []:  # 아직 DB에 저장되지 않은 최근 분
         if isinstance(p, dict) and p.get("ts_ms", 0) >= start:
             by_minute[p["ts_ms"]] = (p["ts_ms"], p.get("temp_avg"), p.get("temp_min"), p.get("temp_max"),
-                                     p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0))
+                                     p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0),
+                                     p.get("cpu_avg"), p.get("cpu_cores"))
 
     groups: list[list[tuple]] = [[] for _ in range(bucket_count)]
     for ts, row in by_minute.items():
@@ -744,11 +762,23 @@ def system(ctx: Context, params: dict) -> dict:
             out.append(_r(fn(values), digits) if values else None)
         return out
 
+    # 코어별: {"0": [구간별 평균 또는 null, ...], "1": [...]}. 코어 번호는 숫자 순서
+    core_values: dict[str, list[list[float]]] = {}
+    for i, rows in enumerate(groups):
+        for r in rows:
+            for core, pct in _cores(r[9] if len(r) > 9 else None).items():
+                core_values.setdefault(core, [[] for _ in range(bucket_count)])[i].append(pct)
+    cpu_cores = {core: [_r(_mean(v), 1) if v else None for v in core_values[core]]
+                 for core in sorted(core_values, key=int)}
+
     per_bucket_minutes = bucket_ms // 60000
     series = {
         "buckets": [start + i * bucket_ms for i in range(bucket_count)],
         "temp_avg": column(1, _mean, 1), "temp_min": column(2, min, 1), "temp_max": column(3, max, 1),
         "freq": column(4, _mean, 0), "load": column(5, _mean, 2),
+        "cpu": [_r(_mean(v), 1) if (v := [r[8] for r in rows if len(r) > 8 and r[8] is not None]) else None
+                for rows in groups],
+        "cpu_cores": cpu_cores,
         "undervolt_s": [sum(r[6] or 0 for r in rows) for rows in groups],
         "overheat_s": [sum(r[7] or 0 for r in rows) for rows in groups],
         "coverage": [_r(min(1.0, len(rows) / per_bucket_minutes), 2) if rows else None for rows in groups],
@@ -767,7 +797,7 @@ def system(ctx: Context, params: dict) -> dict:
     view = None
     if current is not None:
         ts = int(current.get("ts_ms", 0))
-        view = {k: current.get(k) for k in ("ts_ms", "temp_c", "freq_mhz", "load1", "mem_total_mb", "mem_avail_mb",
+        view = {k: current.get(k) for k in ("ts_ms", "temp_c", "freq_mhz", "load1", "cpu_pct", "cpu_pct_1m", "cpu_cores", "mem_total_mb", "mem_avail_mb",
                                             "uptime_s", "undervoltage", "disk_free_gb", "disk_total_gb", "capabilities")}
         view["active"] = current.get("active") or []
         view["top"] = current.get("top") or []

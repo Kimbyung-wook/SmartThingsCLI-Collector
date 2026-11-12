@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS minutes (
     freq_avg    REAL,                  -- MHz
     load_avg    REAL,
     cpu_avg     REAL,                  -- CPU 사용률 % (/proc/stat 표본 차이)
+    cpu_cores   TEXT,                  -- 코어별 1분 평균 사용률 JSON {"0": 12.3, "1": 4.5} (키는 코어 번호)
     mem_avail_mb INTEGER,              -- 그 분의 최솟값
     disk_free_gb REAL,
     undervolt_s INTEGER NOT NULL DEFAULT 0,
@@ -85,6 +86,7 @@ class Sample:
     freq_mhz: float | None = None
     load1: float | None = None
     cpu_pct: float | None = None       # 직전 표본 이후 CPU 사용률 %, 첫 표본은 None
+    cpu_cores: dict[str, float] | None = None  # 코어 번호(문자열) -> 사용률 %. 오프라인 코어는 빠진다
     mem_total_mb: int | None = None
     mem_avail_mb: int | None = None
     uptime_s: int | None = None
@@ -116,6 +118,18 @@ def parse_cpu_line(text: str) -> tuple[int, int] | None:
     if len(values) < 5:
         return None
     return sum(values), values[3] + values[4]
+
+
+def parse_core_lines(text: str) -> dict[str, tuple[int, int]]:
+    """/proc/stat 의 cpuN 줄에서 {코어 번호: (전체 tick, 쉰 tick)}. 오프라인 코어는 줄이 없어 빠진다."""
+    out = {}
+    for line in text.splitlines():
+        if line.startswith("cpu") and line[3:4].isdigit():
+            name, _, rest = line.partition(" ")
+            parsed = parse_cpu_line("cpu " + rest)
+            if parsed is not None:
+                out[name[3:]] = parsed
+    return out
 
 
 def cpu_percent(prev: tuple[int, int] | None, cur: tuple[int, int] | None) -> float | None:
@@ -152,6 +166,7 @@ class SystemReader:
         self._kthreads_at = 0.0
         self._labels: dict[tuple[str, int], str] = {}
         self._cpu_prev: tuple[int, int] | None = None
+        self._core_prev: dict[str, tuple[int, int]] = {}
 
     def _find_hwmon(self, name: str, attr: str) -> Path | None:
         root = self.sys / "class/hwmon"
@@ -187,6 +202,14 @@ class SystemReader:
         s.cpu_pct = cpu_percent(self._cpu_prev, cur)
         if cur is not None:
             self._cpu_prev = cur
+        cores = parse_core_lines(raw) if raw else {}
+        pcts = {}
+        for core, now in cores.items():  # 직전 표본에 없던 코어(새로 켜짐)는 다음 표본부터
+            pct = cpu_percent(self._core_prev.get(core), now)
+            if pct is not None:
+                pcts[core] = pct
+        s.cpu_cores = pcts or None
+        self._core_prev = cores
         raw = _read(self.proc / "uptime")
         if raw:
             try:
@@ -294,9 +317,10 @@ class SysmonStore:
     def _migrate(self) -> None:
         """이전 판에서 만든 DB 에 새 열을 더한다."""
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(minutes)")}
-        if "cpu_avg" not in cols:
-            with self.conn:
-                self.conn.execute("ALTER TABLE minutes ADD COLUMN cpu_avg REAL")
+        for name, kind in (("cpu_avg", "REAL"), ("cpu_cores", "TEXT")):
+            if name not in cols:
+                with self.conn:
+                    self.conn.execute(f"ALTER TABLE minutes ADD COLUMN {name} {kind}")
 
     def close(self) -> None:
         self.conn.close()
@@ -315,13 +339,14 @@ class SysmonStore:
     def add_minutes(self, rows: list[dict]) -> None:
         if not rows:
             return
-        rows = [{"cpu_avg": None, **r} for r in rows]  # cpu_avg 가 없던 판의 현재값 파일에서 온 행
+        # cpu_avg, cpu_cores 가 없던 판의 현재값 파일에서 온 행도 받는다
+        rows = [{"cpu_avg": None, "cpu_cores": None, **r} for r in rows]
         with self.conn:
             self.conn.executemany(
                 "INSERT OR REPLACE INTO minutes(ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, cpu_avg, "
-                "mem_avail_mb, disk_free_gb, undervolt_s, overheat_s, throttle_s, samples) VALUES(:ts_ms, :temp_avg, "
-                ":temp_min, :temp_max, :freq_avg, :load_avg, :cpu_avg, :mem_avail_mb, :disk_free_gb, :undervolt_s, "
-                ":overheat_s, :throttle_s, :samples)",
+                "cpu_cores, mem_avail_mb, disk_free_gb, undervolt_s, overheat_s, throttle_s, samples) VALUES(:ts_ms, "
+                ":temp_avg, :temp_min, :temp_max, :freq_avg, :load_avg, :cpu_avg, :cpu_cores, :mem_avail_mb, "
+                ":disk_free_gb, :undervolt_s, :overheat_s, :throttle_s, :samples)",
                 rows,
             )
 
@@ -357,6 +382,7 @@ class _MinuteBucket:
         self.freqs: list[float] = []
         self.loads: list[float] = []
         self.cpus: list[float] = []
+        self.cores: dict[str, list[float]] = defaultdict(list)
         self.mem_min: int | None = None
         self.undervolt = self.overheat = self.throttle = self.samples = 0
 
@@ -370,6 +396,8 @@ class _MinuteBucket:
             self.loads.append(s.load1)
         if s.cpu_pct is not None:
             self.cpus.append(s.cpu_pct)
+        for core, pct in (s.cpu_cores or {}).items():
+            self.cores[core].append(pct)
         if s.mem_avail_mb is not None:
             self.mem_min = s.mem_avail_mb if self.mem_min is None else min(self.mem_min, s.mem_avail_mb)
         self.undervolt += step_s if conditions.get("undervoltage") else 0
@@ -385,6 +413,8 @@ class _MinuteBucket:
             "temp_max": max(self.temps) if self.temps else None,
             "freq_avg": avg(self.freqs), "load_avg": avg(self.loads),
             "cpu_avg": round(sum(self.cpus) / len(self.cpus), 1) if self.cpus else None,
+            "cpu_cores": json.dumps({c: round(sum(v) / len(v), 1) for c, v in sorted(self.cores.items(), key=lambda kv: int(kv[0]))},
+                                    separators=(",", ":")) if self.cores else None,
             "mem_avail_mb": self.mem_min, "disk_free_gb": disk_free_gb,
             "undervolt_s": self.undervolt, "overheat_s": self.overheat, "throttle_s": self.throttle,
             "samples": self.samples,
