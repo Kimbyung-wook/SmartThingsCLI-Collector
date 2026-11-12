@@ -31,6 +31,8 @@ _DEVICE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_ATTRIBUTES = ("temperature", "humidity", "illuminance")
 SENSOR_ATTRIBUTES = (*ENV_ATTRIBUTES, "motion", "presence")
 STALE_COLLECT_MS = 30 * 60 * 1000
+# 이력 조회 실패가 한두 번의 일시 오류보다 오래 이어질 때만 경고한다 (수집 주기 5분의 2배).
+STALE_HISTORY_MS = 10 * 60 * 1000
 STALE_ROLLUP_MS = 2 * HOUR_MS + 10 * 60 * 1000
 LOW_BATTERY = 20
 LOW_DISK_BYTES = 1024**3
@@ -581,6 +583,14 @@ def alerts(ctx: Context, disk: dict | None = None, batteries: list | None = None
     if last_ok is not None and now - last_ok > STALE_COLLECT_MS:
         minutes = (now - last_ok) // 60000
         out.append({"level": "critical", "text": f"수집이 {minutes}분째 멈췄습니다."})
+    fail_since = ctx.meta_int("history_fail_since_ms")
+    if fail_since is not None and now - fail_since > STALE_HISTORY_MS:
+        minutes = (now - fail_since) // 60000
+        text = f"SmartThings 이력 조회가 {minutes}분째 실패하고 있습니다."
+        fallback = ctx.meta_int("status_fallback_ms")
+        if fallback is not None and fallback >= fail_since:
+            text += " 그동안 현재값만 임시로 받고, 회복되면 밀린 이력을 다시 받습니다."
+        out.append({"level": "warning", "text": text})
     finished = ctx.meta_int("rollup_finished_ms")
     if finished is not None and now - finished > STALE_ROLLUP_MS:
         out.append({"level": "warning", "text": "집계 작업이 2시간 넘게 실행되지 않았습니다."})
@@ -654,6 +664,9 @@ def status(ctx: Context, params: dict) -> dict:
         "last_ok_ms": ctx.meta_int("last_ok_ms"),
         "last_error": ctx.meta("last_error"),
         "last_error_ms": ctx.meta_int("last_error_ms"),
+        "history_fail_since_ms": ctx.meta_int("history_fail_since_ms"),
+        "history_failures": ctx.meta_int("history_failures"),
+        "status_fallback_ms": ctx.meta_int("status_fallback_ms"),
         "rollup_finished_ms": ctx.meta_int("rollup_finished_ms"),
         "closed_until": ctx.closed_until,
         "disk": disk,

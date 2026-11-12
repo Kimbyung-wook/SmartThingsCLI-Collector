@@ -90,7 +90,7 @@ flowchart TD
     fail{"실패 종류"}
     reauth["auth_state = reauth_required<br/>5분 뒤 재시도, 서비스는 active"]
     config["종료 코드 2로 종료<br/>systemd가 30초마다 재시작"]
-    other["last_error 기록<br/>30초부터 최대 900초 대기 후 재시도"]
+    other["last_error 기록<br/>30초부터 최대 수집 주기(300초) 대기 후 재시도"]
 
     due -->|"예"| refresh --> detect --> mode
     due -->|"아니오"| mode
@@ -119,7 +119,8 @@ flowchart TD
 |---|---|
 | `ReauthRequired` | `meta.auth_state = reauth_required` 기록, 5분 뒤 재시도. **프로세스가 끝나지 않아 서비스는 active로 표시** |
 | `ConfigError` | 프로세스가 종료 코드 2로 종료, systemd가 30초마다 재시작 |
-| 그 밖의 오류 | `meta.last_error`에 기록, 30초부터 최대 900초까지 대기를 늘려 재시도 |
+| 이력 조회 실패 (HTTP 500 등) | 아래 오류와 같이 재시도. `meta.history_fail_since_ms`, `history_failures` 기록. 2회 연속 실패부터 수집 주기마다 `devices --status`로 현재값만 임시 저장(`status_fallback_ms`). 위치 커서는 그대로라 회복 뒤 밀린 이력을 다시 받음. 10분 넘게 이어지면 대시보드 경고 |
+| 그 밖의 오류 | `meta.last_error`에 기록, 30초부터 최대 수집 주기(`history_interval_s`, 기본 300초)까지 대기를 늘려 재시도. 서버·CLI 오류는 스택 없이 한 줄로 로그 |
 
 - 성공할 때마다 기록: `meta.last_ok_ms`, `auth_state = ok`
 

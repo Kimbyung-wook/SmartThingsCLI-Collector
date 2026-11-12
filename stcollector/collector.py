@@ -13,13 +13,19 @@ from .cli_client import SmartThingsCliClient
 from .client import SmartThingsClient
 from .config import Config, ConfigError
 from .db import Database, Reading
-from .transport import HttpError
+from .transport import HttpError, TransportError
 
 log = logging.getLogger(__name__)
 
 DAY_MS = 86_400_000
 # 이력이 늦게 도착하는 경우를 대비해 매번 10분 겹쳐서 조회한다 (중복은 DB가 걸러낸다).
 HISTORY_OVERLAP_MS = 10 * 60 * 1000
+# 오류 뒤 재시도 간격은 30초에서 두 배씩 늘리되 수집 주기(history_interval_s)를 넘기지 않는다.
+# 서버가 회복되면 다음 수집 주기 안에 다시 이어 받기 위해서다.
+MIN_RETRY_S = 30.0
+# 이력 조회가 이만큼 연속으로 실패하면 기다리는 동안 현재값만 상태 조회로 임시 수집한다.
+# 한 번은 일시적인 500 으로 보고 넘긴다 (실측: 한 번 실패 후 1분 안에 성공한 경우가 있었다).
+HISTORY_FALLBACK_AFTER = 2
 
 
 # ---- 값 변환 ---------------------------------------------------------------
@@ -111,6 +117,7 @@ class Collector:
         self.mode: str | None = None if cfg.mode == "auto" else cfg.mode
         self._next_status: dict[str, float] = {}
         self._stop: threading.Event | None = None
+        self._history_failures = 0
 
     def _uses_cli(self) -> bool:
         return self.cfg.backend == "cli"
@@ -316,6 +323,52 @@ class Collector:
     def next_status_due(self) -> float:
         return min(self._next_status.values(), default=self.clock())
 
+    # ---- 이력 조회 실패 대응 ---------------------------------------------------
+    def poll_history_or_fallback(self) -> int:
+        """이력을 읽는다. 실패하면 실패 상태를 기록하고, 이어지면 현재값을 임시 수집한 뒤 다시 올린다.
+
+        실패한 이력 구간은 위치 커서가 그대로라서 회복 뒤 첫 조회에서 다시 받는다.
+        임시 수집은 그동안 대시보드의 현재값이 멈추지 않게 하려는 것이다.
+        """
+        try:
+            inserted = self.poll_history()
+        except (HttpError, TransportError) as e:
+            self._history_failed(e)
+            raise
+        if self._history_failures or self.db.get_meta("history_fail_since_ms") is not None:
+            log.info("이력 조회가 회복되었습니다 (연속 실패 %d회 뒤)", self._history_failures)
+            self._history_failures = 0
+            self.db.set_meta("history_fail_since_ms", None)
+            self.db.set_meta("history_failures", None)
+        return inserted
+
+    def _history_failed(self, error: Exception) -> None:
+        self._history_failures += 1
+        now_ms = self._now_ms()
+        if self.db.get_meta("history_fail_since_ms") is None:
+            self.db.set_meta("history_fail_since_ms", now_ms)
+        self.db.set_meta("history_failures", self._history_failures)
+        if self._history_failures < HISTORY_FALLBACK_AFTER:
+            return
+        try:
+            inserted = self.poll_status_due()
+        except ReauthRequired:
+            raise
+        except Exception as e:
+            log.warning("이력 조회 실패 중 현재값 임시 수집도 실패: %s: %s", type(e).__name__, e)
+            return
+        self.db.set_meta("status_fallback_ms", now_ms)
+        # 현재값은 받고 있으므로 '수집 멈춤'이 아니라 '이력 조회 실패'로 보이게 한다.
+        self.db.set_meta("last_ok_ms", now_ms)
+        log.warning(
+            "이력 조회 %d회 연속 실패 — 현재값 %d건을 임시 저장했습니다 (회복되면 밀린 이력을 다시 받습니다)",
+            self._history_failures, inserted,
+        )
+
+    def retry_delay(self, previous: float) -> float:
+        cap = max(MIN_RETRY_S, float(self.cfg.history_interval_s))
+        return min(cap, max(MIN_RETRY_S, previous * 2))
+
     # ---- 메인 루프 ----------------------------------------------------------
     def run(self, stop: threading.Event) -> None:
         self._stop = stop
@@ -333,7 +386,7 @@ class Collector:
 
                 inserted = 0
                 if self.mode == "history" and now >= next_history:
-                    inserted = self.poll_history()
+                    inserted = self.poll_history_or_fallback()
                     next_history = now + self.cfg.history_interval_s
                 elif self.mode == "status":
                     inserted = self.poll_status_due()
@@ -351,9 +404,13 @@ class Collector:
                 continue
             except ConfigError:
                 raise
-            except Exception as e:  # 네트워크/일시 오류: 기록하고 점점 늦춰서 재시도
-                backoff = min(900.0, max(30.0, backoff * 2))
-                log.exception("수집 오류, %.0f초 후 재시도", backoff)
+            except Exception as e:  # 네트워크/일시 오류: 기록하고 늦춰서 재시도 (수집 주기 이하)
+                backoff = self.retry_delay(backoff)
+                if isinstance(e, (HttpError, TransportError)):
+                    # 서버·CLI 오류는 원인이 메시지에 다 있으므로 스택 없이 한 줄로 남긴다.
+                    log.error("수집 오류, %.0f초 후 재시도: %s: %s", backoff, type(e).__name__, e)
+                else:
+                    log.exception("수집 오류, %.0f초 후 재시도", backoff)
                 self.db.set_meta("last_error", f"{type(e).__name__}: {e}")
                 self.db.set_meta("last_error_ms", self._now_ms())
                 stop.wait(backoff)
