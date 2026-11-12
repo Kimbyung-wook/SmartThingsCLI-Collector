@@ -93,12 +93,12 @@ smartthings capabilities:create -i edge-driver/capabilities/disk-usage.json
 ### 2. capability presentation 6개 만들기
 
 ```powershell
-smartthings capabilities:presentation:create "$NS.cpuTemperature" 1 -i edge-driver/capabilities/cpu-temperature.presentation.json
-smartthings capabilities:presentation:create "$NS.cpuClock" 1 -i edge-driver/capabilities/cpu-clock.presentation.json
-smartthings capabilities:presentation:create "$NS.cpuUsage" 1 -i edge-driver/capabilities/cpu-usage.presentation.json
-smartthings capabilities:presentation:create "$NS.collectStatus" 1 -i edge-driver/capabilities/collect-status.presentation.json
-smartthings capabilities:presentation:create "$NS.lastCollectTime" 1 -i edge-driver/capabilities/last-collect-time.presentation.json
-smartthings capabilities:presentation:create "$NS.diskUsage" 1 -i edge-driver/capabilities/disk-usage.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuTemperature" --capability-version 1 -i edge-driver/capabilities/cpu-temperature.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuClock" --capability-version 1 -i edge-driver/capabilities/cpu-clock.presentation.json
+smartthings capabilities:presentation:create "$NS.cpuUsage" --capability-version 1 -i edge-driver/capabilities/cpu-usage.presentation.json
+smartthings capabilities:presentation:create "$NS.collectStatus" --capability-version 1 -i edge-driver/capabilities/collect-status.presentation.json
+smartthings capabilities:presentation:create "$NS.lastCollectTime" --capability-version 1 -i edge-driver/capabilities/last-collect-time.presentation.json
+smartthings capabilities:presentation:create "$NS.diskUsage" --capability-version 1 -i edge-driver/capabilities/disk-usage.presentation.json
 ```
 
 ### 2-1. 번역 올리기 (영어, 한국어)
@@ -110,12 +110,12 @@ $files = @{ cpuTemperature = "cpu-temperature"; cpuClock = "cpu-clock"; cpuUsage
             collectStatus = "collect-status"; lastCollectTime = "last-collect-time"; diskUsage = "disk-usage" }
 foreach ($id in $files.Keys) {
   foreach ($tag in "en", "ko") {
-    smartthings capabilities:translation:upsert "$NS.$id" 1 -i "edge-driver/capabilities/i18n/$($files[$id]).$tag.json"
+    smartthings capabilities:translations:upsert "$NS.$id" --capability-version 1 -i "edge-driver/capabilities/i18n/$($files[$id]).$tag.json"
   }
 }
 ```
 
-- 명령 이름은 공식 문서 표기(`capabilities:translation:upsert`, 단수)를 따랐다. 버전 인자 `1`이 필요한지는 확인 못 했다. 오류가 나면 `smartthings capabilities:translation:upsert --help`로 인자를 확인한다.
+- CLI의 명령 이름은 `capabilities:translations:upsert`(복수)이고, 버전은 위치 인자가 아니라 `--capability-version` 옵션으로 준다 (2026-11-13 CLI `--help`로 확인). `presentation:create`도 같다.
 - 번역을 올리지 않으면 상세 화면과 루틴의 항목 이름이 비거나 `{{i18n.label}}` 그대로 보일 수 있다 (미확인).
 
 ### 3. 채널 만들기 (처음 한 번)
@@ -144,8 +144,17 @@ smartthings edge:channels:enroll
 smartthings edge:drivers:install
 ```
 
-- 각 명령은 드라이버, 채널, 허브를 목록에서 고르게 한다.
+- 각 명령은 드라이버, 채널, 허브를 목록에서 고르게 한다. 고르지 않고 넘어가면 아무것도 바뀌지 않는다.
 - 순서: 채널에 드라이버 배정 → 허브를 채널에 등록 → 허브에 드라이버 설치.
+- 목록에서 고르는 대신 id를 직접 넣을 수도 있다. 드라이버 id는 `smartthings edge:drivers`, 채널 id는 `smartthings edge:channels`, 허브 id는 `smartthings devices`에서 종류가 허브인 기기의 id다.
+
+```powershell
+smartthings edge:channels:assign <driver-id> --channel <channel-id>
+smartthings edge:channels:enroll <hub-id> --channel <channel-id>
+smartthings edge:drivers:install <driver-id> --hub <hub-id> --channel <channel-id>
+```
+
+- 반영 확인: `smartthings edge:channels:drivers <channel-id>`에 드라이버가, `smartthings edge:channels:enrollments <hub-id>`에 채널이, `smartthings edge:drivers:installed --hub <hub-id>`에 드라이버가 보여야 한다.
 - 드라이버를 고친 뒤에는 4단계와 `edge:channels:assign`만 다시 하면 허브가 새 버전을 받는다 (반영까지 몇 분에서 몇 시간 걸릴 수 있음, 미확인). 기다리지 않으려면 `edge:drivers:install`을 다시 실행한다.
 
 ### 6. 앱에서 기기 추가와 RPi 주소 입력
