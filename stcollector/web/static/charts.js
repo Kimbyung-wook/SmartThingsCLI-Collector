@@ -69,6 +69,8 @@
          aria, directLabels, domain:[lo,hi]}
      band: 최소~최대 띠. 계열이 하나면 무채색(--band), 여럿이면 계열 색을 옅게(.rband) */
   function line(host, o) { mount(host, () => drawLine(host, o)); }
+  // 빈 구간을 점선으로 잇는 최대 길이 (x축 전체 칸 수에 대한 비율). 이 이상이면 끊는다
+  const GAP_LINK_MAX = 0.25;
 
   function drawLine(host, o) {
     host.replaceChildren();
@@ -159,23 +161,40 @@
       drawBand(solid, 1); drawBand(faded, 0.5);
     });
 
+    let bridged = false;
     o.series.forEach(se => {
       const c = color(se.color);
       const ok = i => se.avg[i] != null, faint = faintOf(se);
-      let solid = '', faded = '';
+      let solid = '', faded = '', dashed = '';
+      const linked = new Set();  // 점선으로 이어진 끝점 (외딴 점 표시 생략)
       for (let i = 0; i < n - 1; i++) {
-        if (!ok(i) || !ok(i + 1)) continue;
-        const seg = 'M' + P(i, se.avg[i]) + 'L' + P(i + 1, se.avg[i + 1]);
-        if (faint(i) || faint(i + 1)) faded += seg; else solid += seg;
+        if (!ok(i)) continue;
+        if (ok(i + 1)) {
+          const seg = 'M' + P(i, se.avg[i]) + 'L' + P(i + 1, se.avg[i + 1]);
+          if (faint(i) || faint(i + 1)) faded += seg; else solid += seg;
+          continue;
+        }
+        // 빈 칸 뒤의 첫 값과 점선으로 잇는다. 공백이 길면 지금처럼 끊는다
+        let j = i + 2;
+        while (j < n && !ok(j)) j++;
+        if (j < n && j - i - 1 < n * GAP_LINK_MAX) {
+          dashed += 'M' + P(i, se.avg[i]) + 'L' + P(j, se.avg[j]);
+          linked.add(i); linked.add(j);
+        }
       }
       const drawLinePath = (d, op) => {
         if (!d) return;
         const p = s('path', { d, fill: 'none', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: op }, svg);
         p.style.stroke = c;
       };
+      if (dashed) {
+        const p = s('path', { d: dashed, fill: 'none', 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.5, class: 'gapline' }, svg);
+        p.style.stroke = c;
+        bridged = true;
+      }
       drawLinePath(faded, 0.35); drawLinePath(solid, 1);
       for (let i = 0; i < n; i++) {
-        if (ok(i) && !(i > 0 && ok(i - 1)) && !(i < n - 1 && ok(i + 1))) {
+        if (ok(i) && !linked.has(i) && !(i > 0 && ok(i - 1)) && !(i < n - 1 && ok(i + 1))) {
           const d = s('circle', { cx: X(i), cy: Y(se.avg[i]), r: 3, opacity: faint(i) ? 0.35 : 1 }, svg);
           d.style.fill = c;
         }
@@ -204,6 +223,12 @@
       return d;
     });
     host.appendChild(svg);
+    if (bridged) {
+      const key = document.createElement('div'), sw = document.createElement('i'), span = document.createElement('span');
+      key.className = 'legend gapkey'; sw.className = 'dash-key';
+      span.append(sw, '점선은 데이터가 없는 구간');
+      key.appendChild(span); host.appendChild(key);
+    }
     const t = tipFor(host);
     let cur = -1;
     const hide = () => { cur = -1; xl.setAttribute('visibility', 'hidden'); dots.forEach(d => d.setAttribute('visibility', 'hidden')); t.hidden = true; active.delete(ctl); };
@@ -221,7 +246,9 @@
       const rows = [];
       const single = o.series.length === 1 && o.band && o.series[0].min;
       o.series.forEach(se => {
-        if (single) {
+        if (single && se.avg[i] == null) {
+          rows.push({ key: '평균', value: '데이터 없음', color: color(se.color) });
+        } else if (single) {
           rows.push({ key: '평균', value: fmt(se.avg[i], o.digits) + ' ' + o.unit, color: color(se.color) });
           rows.push({ key: '최대', value: fmt(se.max[i], o.digits) });
           rows.push({ key: '최소', value: fmt(se.min[i], o.digits) });

@@ -171,3 +171,5 @@ details .scroll{max-height:260px;overflow:auto}
 .ghost:disabled{color:var(--axis);cursor:default;background:none}
 .settings-foot{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .settings-foot .primary{font-size:13px;padding:8px 16px;min-height:36px;margin-top:0}
+.gapkey{margin-top:4px}
+.dash-key{display:inline-block;width:14px;height:0;border-top:1px dashed var(--ink2);opacity:.8}

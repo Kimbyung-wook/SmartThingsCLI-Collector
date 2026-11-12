@@ -123,7 +123,9 @@ def generate(db: Database, days: int, seed: int, now_ms: int) -> int:
     rng = random.Random(seed)
     step = 5 * MIN
     start = (now_ms - days * DAY) // (6 * HOUR) * (6 * HOUR)  # 보고 주기 계산이 맞도록 정렬
-    outages = [(now_ms - 120 * DAY, now_ms - 117 * DAY), (now_ms - 5 * DAY - 6 * HOUR, now_ms - 5 * DAY)]
+    # 24시간 보기에서 짧은 공백(4시간, 점선으로 이어짐)과 긴 공백(10시간, 끊김)이 함께 보이게 한다
+    outages = [(now_ms - 120 * DAY, now_ms - 117 * DAY), (now_ms - 5 * DAY - 6 * HOUR, now_ms - 5 * DAY),
+               (now_ms - 24 * HOUR, now_ms - 20 * HOUR), (now_ms - 16 * HOUR, now_ms - 6 * HOUR)]
     in_outage = lambda t: any(a <= t < b for a, b in outages)  # noqa: E731
 
     db.upsert_devices(devices())
