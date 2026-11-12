@@ -34,6 +34,8 @@ CACHE_ENTRIES = 64
 LIVE_CACHE_MS = 15_000
 # 로그인 전에 받아야 하는 파일 (스타일, 홈 화면 아이콘, manifest)
 PUBLIC_STATIC = {"/static/style.css", "/manifest.webmanifest"}
+# SmartThings 허브의 Edge 드라이버가 읽는 경로 (로그인 없음, 허용 주소만)
+HUB_PATH = "/hub/status"
 
 LOGIN_MESSAGES = {  # 고정 문구만 넣는다 (요청 값을 페이지에 쓰지 않는다)
     "bad": "비밀번호가 맞지 않습니다.",
@@ -114,6 +116,18 @@ class App:
         if getattr(addr, "ipv4_mapped", None):
             addr = addr.ipv4_mapped
         return addr.is_loopback or any(addr in net for net in self.settings.allowed_networks)
+
+    def hub_allowed(self, ip: str) -> bool:
+        """/hub/status 를 읽을 수 있는 주소인지. 목록에 적힌 주소만 허용한다 (루프백도 따로 적어야 함)."""
+        if not self.settings.hub_status_allow:
+            return False
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if getattr(addr, "ipv4_mapped", None):
+            addr = addr.ipv4_mapped
+        return addr in self.settings.hub_status_allow
 
     def cached(self, key: str, version: str, build) -> tuple[bytes, bytes]:
         with self._cache_lock:
@@ -200,10 +214,13 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET(head_only=True)
 
     def do_GET(self, head_only: bool = False):
-        if not self._ip_ok():
-            return
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
+        if path == HUB_PATH:
+            self._hub_status(head_only)
+            return
+        if not self._ip_ok():
+            return
         if path.startswith("/api/"):
             self._api(path, parsed.query, head_only)
             return
@@ -277,6 +294,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         app.limiter.success(ip)
         self._redirect("/", {"Set-Cookie": self._cookie_header(app.sessions.create(), app.sessions.max_age)})
+
+    def _hub_status(self, head_only: bool):
+        """SmartThings 허브용 읽기 전용 요약. 로그인 없이 hub_status_allow 의 주소에서만 열린다.
+
+        목록이 비었거나 다른 주소면 경로가 없는 것처럼 404 를 돌려준다.
+        """
+        app = self.app
+        if not app.hub_allowed(self.client_address[0]):
+            self._text(404, "없는 주소입니다")
+            return
+        conn = app.connect()
+        try:
+            ctx = api.Context(conn, int(app.clock() * 1000), app.db_path, app.sysmon_db, app.sysmon_current)
+            data = api.hub_status(ctx)
+        except sqlite3.Error:
+            log.exception("DB 조회 실패: %s", HUB_PATH)
+            self._json_error(503, "데이터를 읽지 못했습니다")
+            return
+        finally:
+            conn.close()
+        body = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+        self._send(200, body, "application/json; charset=utf-8", headers={"Cache-Control": "no-store"},
+                   head_only=head_only)
 
     def _api(self, path: str, query: str, head_only: bool):
         if not self._authed():

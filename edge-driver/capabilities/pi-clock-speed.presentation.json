@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{clockSpeed.value}} {{clockSpeed.unit}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "CPU 클럭",
+      "displayType": "state",
+      "state": {
+        "label": "{{clockSpeed.value}} {{clockSpeed.unit}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "CPU 클럭",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "clockSpeed.value",
+          "valueType": "number",
+          "unit": "clockSpeed.unit",
+          "range": [
+            0,
+            5000
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piClockSpeed",
+  "version": 1
+}

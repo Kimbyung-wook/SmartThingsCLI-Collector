@@ -1,0 +1,6 @@
+name: 'stcollector RPi Status'
+packageKey: 'stcollector-rpi-status'
+description: 'Reads the read-only /hub/status summary of the stcollector Raspberry Pi on the LAN.'
+permissions:
+  lan: {}
+  discovery: {}

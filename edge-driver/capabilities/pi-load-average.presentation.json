@@ -1,0 +1,38 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{loadAverage.value}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "Load (1분)",
+      "displayType": "state",
+      "state": {
+        "label": "{{loadAverage.value}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "Load (1분)",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "loadAverage.value",
+          "valueType": "number",
+          "range": [
+            0,
+            1000
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piLoadAverage",
+  "version": 1
+}

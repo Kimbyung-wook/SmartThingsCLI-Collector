@@ -1,0 +1,34 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{lastCollect.value}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "마지막 수집",
+      "displayType": "state",
+      "state": {
+        "label": "{{lastCollect.value}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "마지막 수집",
+        "displayType": "textField",
+        "textField": {
+          "value": "lastCollect.value",
+          "valueType": "string"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piLastCollect",
+  "version": 1
+}

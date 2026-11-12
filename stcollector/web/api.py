@@ -11,6 +11,7 @@ import math
 import re
 import shutil
 import sqlite3
+import time
 from collections import defaultdict
 
 from .. import __version__
@@ -795,6 +796,76 @@ def meta(ctx: Context, params: dict) -> dict:
         "alerts": alerts(ctx),
     }
 
+
+
+# ---- /hub/status: SmartThings 허브용 요약 -----------------------------------------
+# 허브의 Edge 드라이버가 60초마다 읽는다. 로그인 없이 허용 주소에서만 열리므로
+# 기기·방 이름, 오류 문구, 비밀값을 넣지 않는다. 새로 측정하지 않고 저장된 최근 값만 읽는다.
+# 수집 판정 (contact 이상 = open 은 ok=false 일 때):
+#   reauth   SmartThings 재인증 필요                     -> 이상
+#   unknown  수집이 한 번도 성공한 적 없음               -> 이상
+#   stopped  마지막 수집 성공이 30분(STALE_COLLECT_MS) 넘음 -> 이상
+#   history  이력 조회가 10분 넘게 연속 실패 (현재값 임시 수집 중일 수 있음)
+#            -> 60분(HUB_HISTORY_ALERT_MS)을 넘기면 이상, 그 전에는 정상으로 둔다
+#   ok       그 밖
+HUB_HISTORY_ALERT_MS = 60 * 60 * 1000
+HUB_STATE_TEXT = {
+    "ok": "정상", "history": "이력 지연", "stopped": "수집 멈춤", "reauth": "재인증 필요", "unknown": "수집 기록 없음",
+}
+
+
+def _kst_text(ms: int | None) -> str | None:
+    if ms is None:
+        return None
+    t = time.gmtime((ms + KST_OFFSET_MS) // 1000)
+    return f"{t.tm_mon:02d}-{t.tm_mday:02d} {t.tm_hour:02d}:{t.tm_min:02d}"
+
+
+def collect_health(ctx: Context) -> tuple[str, bool, int | None]:
+    """(상태, 정상 여부, 지속 분). 판정 기준은 위 주석."""
+    now = ctx.now_ms
+    if ctx.meta("auth_state") == "reauth_required":
+        return "reauth", False, None
+    last_ok = ctx.meta_int("last_ok_ms")
+    if last_ok is None:
+        return "unknown", False, None
+    if now - last_ok > STALE_COLLECT_MS:
+        return "stopped", False, (now - last_ok) // 60000
+    fail_since = ctx.meta_int("history_fail_since_ms")
+    if fail_since is not None and now - fail_since > STALE_HISTORY_MS:
+        return "history", now - fail_since <= HUB_HISTORY_ALERT_MS, (now - fail_since) // 60000
+    return "ok", True, None
+
+
+def hub_status(ctx: Context) -> dict:
+    state, ok, minutes = collect_health(ctx)
+    text = HUB_STATE_TEXT[state] + (f" {minutes}분" if minutes is not None else "")
+    last_ok = ctx.meta_int("last_ok_ms")
+    current = _sysmon_current(ctx)
+    fresh = current is not None and ctx.now_ms - int(current.get("ts_ms", 0) or 0) <= SYSMON_STALE_MS
+
+    def num(key, digits):
+        value = current.get(key) if fresh else None
+        return _r(float(value), digits) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    try:
+        disk = shutil.disk_usage(ctx.db_path.parent)
+        disk_pct = _r(disk.used / disk.total * 100, 1) if disk.total else None
+    except OSError:
+        disk_pct = None
+    return {
+        "now_ms": ctx.now_ms,
+        "collect_ok": ok,
+        "collect_state": state,
+        "collect_text": text,
+        "last_ok_ms": last_ok,
+        "last_ok_text": _kst_text(last_ok),
+        "cpu_temp_c": num("temp_c", 1),
+        "cpu_mhz": num("freq_mhz", 0),
+        "load1": num("load1", 2),
+        "disk_used_pct": disk_pct,
+        "sysmon_fresh": fresh,
+    }
 
 # 집계가 바뀌어야 결과가 바뀌는 API (rollup 완료 시각으로 캐시)
 ROLLUP_ROUTES = {"/api/series": series, "/api/lux-dist": lux_dist, "/api/occupancy": occupancy, "/api/plugs": plugs}

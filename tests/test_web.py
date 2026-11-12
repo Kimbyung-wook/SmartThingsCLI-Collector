@@ -213,6 +213,147 @@ class AccessTests(TempDirMixin, unittest.TestCase):
         self.assertFalse(app.allowed_ip("8.8.8.8"))
 
 
+class HubStatusTests(TempDirMixin, unittest.TestCase):
+    """SmartThings 허브용 /hub/status: 허용 주소만, 로그인 없이, 이름·비밀값 없이."""
+
+    def start(self, allow, now_ms=BASE + 3 * HOUR_MS, current=None):
+        db_path = self.tmp / "h.db"
+        db = Database(db_path)
+        db.upsert_devices([
+            {"device_id": "dev-1", "label": "시험 센서", "name": "x", "room_id": "r1", "room_name": "시험 방",
+             "location_id": "loc-test", "capabilities": {"temperatureMeasurement"}},
+        ])
+        db.set_meta("last_ok_ms", now_ms - 5 * 60_000)
+        db.set_meta("auth_state", "ok")
+        db.set_meta("last_error", "secret-looking error text")
+        db.close()
+        runtime = self.tmp / "current.json"
+        if current is not None:
+            runtime.write_text(json.dumps(current), "utf-8")
+        app = server.App(db_path, settings(hub_status_allow=tuple(ipaddress.ip_address(a) for a in allow)),
+                         clock=lambda: now_ms / 1000, sysmon_current=runtime)
+        srv = server.Server(("127.0.0.1", 0), app)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            srv.shutdown()
+            srv.server_close()
+            thread.join(5)
+        self.addCleanup(stop)
+        return srv.server_address[1]
+
+    def get(self, port, path="/hub/status", method="GET"):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request(method, path)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, dict(r.getheaders()), data
+
+    def test_closed_by_default(self):
+        port = self.start([])
+        self.assertEqual(self.get(port)[0], 404)
+
+    def test_other_address_gets_404(self):
+        port = self.start(["192.168.0.20"])
+        self.assertEqual(self.get(port)[0], 404)
+
+    def test_allowed_address_without_login(self):
+        now = BASE + 3 * HOUR_MS
+        port = self.start(["127.0.0.1"], now_ms=now, current={
+            "ts_ms": now - 3000, "temp_c": 51.234, "freq_mhz": 900.0, "load1": 0.42,
+        })
+        status, hdrs, data = self.get(port)
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs["Cache-Control"], "no-store")
+        body = json.loads(data)
+        self.assertTrue(body["collect_ok"])
+        self.assertEqual(body["collect_state"], "ok")
+        self.assertEqual(body["collect_text"], "정상")
+        self.assertEqual(body["cpu_temp_c"], 51.2)
+        self.assertEqual(body["cpu_mhz"], 900)
+        self.assertEqual(body["load1"], 0.42)
+        self.assertIsInstance(body["disk_used_pct"], float)
+        self.assertRegex(body["last_ok_text"], r"^\d\d-\d\d \d\d:\d\d$")
+        text = data.decode()
+        for secret in ("시험 센서", "시험 방", "loc-test", "dev-1", "secret-looking"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(self.get(port, method="HEAD")[0], 200)
+
+    def test_stale_sysmon_values_are_null(self):
+        now = BASE + 3 * HOUR_MS
+        port = self.start(["127.0.0.1"], now_ms=now, current={"ts_ms": now - 120_000, "temp_c": 50.0})
+        body = json.loads(self.get(port)[2])
+        self.assertIsNone(body["cpu_temp_c"])
+        self.assertFalse(body["sysmon_fresh"])
+
+    def test_other_paths_still_need_login(self):
+        port = self.start(["127.0.0.1"])
+        self.assertEqual(self.get(port, "/api/status")[0], 401)
+        self.assertEqual(self.get(port, "/hub/status/x")[0], 404)
+
+
+class FakeMetaCtx:
+    def __init__(self, now_ms, **meta):
+        self.now_ms, self._meta = now_ms, meta
+
+    def meta(self, key):
+        value = self._meta.get(key)
+        return None if value is None else str(value)
+
+    meta_int = api.Context.meta_int
+
+
+class CollectHealthTests(unittest.TestCase):
+    NOW = BASE
+
+    def health(self, **meta):
+        return api.collect_health(FakeMetaCtx(self.NOW, **meta))
+
+    def test_ok(self):
+        self.assertEqual(self.health(last_ok_ms=self.NOW - 60_000), ("ok", True, None))
+
+    def test_never_collected(self):
+        self.assertEqual(self.health()[:2], ("unknown", False))
+
+    def test_reauth(self):
+        self.assertEqual(self.health(last_ok_ms=self.NOW, auth_state="reauth_required")[:2], ("reauth", False))
+
+    def test_stopped_after_30_minutes(self):
+        self.assertEqual(self.health(last_ok_ms=self.NOW - 30 * 60_000)[:2], ("ok", True))
+        self.assertEqual(self.health(last_ok_ms=self.NOW - 31 * 60_000), ("stopped", False, 31))
+
+    def test_history_failure_alerts_after_an_hour(self):
+        recent = self.NOW - 60_000
+        self.assertEqual(self.health(last_ok_ms=recent, history_fail_since_ms=self.NOW - 5 * 60_000)[:2], ("ok", True))
+        self.assertEqual(self.health(last_ok_ms=recent, history_fail_since_ms=self.NOW - 20 * 60_000),
+                         ("history", True, 20))
+        self.assertEqual(self.health(last_ok_ms=recent, history_fail_since_ms=self.NOW - 61 * 60_000),
+                         ("history", False, 61))
+
+
+class HubSettingsTests(TempDirMixin, unittest.TestCase):
+    def load(self, text):
+        from stcollector.settings import load_web_settings
+        path = self.tmp / "c.toml"
+        path.write_text(text, "utf-8")
+        return load_web_settings(path)
+
+    def test_default_empty(self):
+        self.assertEqual(self.load("[web]\n").hub_status_allow, ())
+
+    def test_addresses(self):
+        s = self.load('[web]\nhub_status_allow = ["192.168.0.20"]\n')
+        self.assertEqual(s.hub_status_allow, (ipaddress.ip_address("192.168.0.20"),))
+
+    def test_rejects_network(self):
+        with self.assertRaises(ConfigError):
+            self.load('[web]\nhub_status_allow = ["192.168.0.0/24"]\n')
+        with self.assertRaises(ConfigError):
+            self.load('[web]\nhub_status_allow = "192.168.0.20"\n')
+
+
 class ApiMathTests(unittest.TestCase):
     def test_dew_point(self):
         self.assertAlmostEqual(api.dew_point(25.0, 50.0), 13.86, places=1)

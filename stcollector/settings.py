@@ -45,6 +45,8 @@ class WebSettings:
     password_hash: str
     allowed_networks: tuple
     session_days: int
+    # SmartThings 허브가 /hub/status 를 읽을 수 있는 주소. 비어 있으면 그 경로를 닫는다.
+    hub_status_allow: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -116,10 +118,18 @@ def load_web_settings(path: str | os.PathLike) -> WebSettings:
         nets = tuple(ipaddress.ip_network(n) for n in raw.get("allowed_networks", ["192.168.0.0/24"]))
     except (TypeError, ValueError) as e:
         raise ConfigError(f"web.allowed_networks 형식 오류: {e}") from None
+    hub = raw.get("hub_status_allow", [])
+    if not isinstance(hub, list):
+        raise ConfigError("web.hub_status_allow 는 IP 주소 목록이어야 합니다 (예: [\"192.168.0.20\"])")
+    try:
+        hub_addrs = tuple(ipaddress.ip_address(a) for a in hub)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"web.hub_status_allow 형식 오류 (대역이 아니라 주소 하나씩 적습니다): {e}") from None
     return WebSettings(
         host=str(raw.get("host", "0.0.0.0")),
         port=port,
         password_hash=str(raw.get("password_hash", "")),
         allowed_networks=nets,
         session_days=days,
+        hub_status_allow=hub_addrs,
     )

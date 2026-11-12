@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{diskUsage.value}} {{diskUsage.unit}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "디스크 사용",
+      "displayType": "state",
+      "state": {
+        "label": "{{diskUsage.value}} {{diskUsage.unit}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "디스크 사용",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "diskUsage.value",
+          "valueType": "number",
+          "unit": "diskUsage.unit",
+          "range": [
+            0,
+            100
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piDiskUsage",
+  "version": 1
+}

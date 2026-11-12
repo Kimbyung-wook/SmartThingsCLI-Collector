@@ -120,6 +120,7 @@ sudo nano /etc/stcollector/config.toml
 sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 ```
 
+- SmartThings 앱에서 RPi 상태 보기: `[web] hub_status_allow`에 허브 IP를 넣고 웹 재시작. 드라이버 설치는 [edge-driver/README.md](../edge-driver/README.md)
 - `max_hold_s` 조정: `stcollector intervals --days 7`로 센서별 보고 간격을 측정한 뒤 `[rollup.max_hold_s]` 변경
 - 과거 구간에도 적용: `stcollector rollup --full`
 - 코드 갱신: [README: 코드 갱신](../README.md#1-코드-갱신) 절차. 설정, DB, 자격증명은 유지
@@ -182,6 +183,8 @@ sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 | 접속이 안 됨 | `sudo ufw status`로 8080 허용 확인, 접속 기기가 같은 공유기에 연결돼 있는지 확인 |
 | `허용되지 않은 네트워크입니다` | 접속 기기의 대역이 `allowed_networks`에 있어야 함 |
 | 공유기 대역이 `192.168.0.x`에서 바뀜 | `ufw` 규칙, `config.toml`의 `allowed_networks`, `stcollector-web.service`의 `IPAddressAllow`를 함께 변경 |
+| SmartThings 앱의 `RPi 상태`가 열림 | 앱의 `SmartThings 수집` 값 확인. `RPi 응답 없음`이면 RPi·웹 서비스·허브 IP 허용 확인, 그 밖이면 대시보드 상태 탭의 경고대로 조치. 판정 기준: [ARCHITECTURE: 허브 상태 경로](ARCHITECTURE.md#허브-상태-경로-hubstatus) |
+| 허브 드라이버 로그에 `HTTP 404` | `config.toml`의 `[web] hub_status_allow`에 허브 IP가 있는지 확인 후 `sudo systemctl restart stcollector-web`. 허브 IP가 바뀌었으면 공유기 DHCP 예약부터 확인 |
 | `실패가 많아 5분간 로그인이 막혔습니다` | 5분 뒤 재시도. 비밀번호를 잊었으면 `stcollector hash-password`로 해시를 새로 넣고 웹 재시작 |
 
 ### 하드웨어와 저장장치

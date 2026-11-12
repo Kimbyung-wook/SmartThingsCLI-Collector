@@ -1,0 +1,34 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{collectStatus.value}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "SmartThings 수집",
+      "displayType": "state",
+      "state": {
+        "label": "{{collectStatus.value}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "SmartThings 수집",
+        "displayType": "textField",
+        "textField": {
+          "value": "collectStatus.value",
+          "valueType": "string"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piCollectStatus",
+  "version": 1
+}

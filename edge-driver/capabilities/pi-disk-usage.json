@@ -1,0 +1,30 @@
+{
+  "name": "Pi Disk Usage",
+  "attributes": {
+    "diskUsage": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "%"
+            ],
+            "default": "%"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "value"
+        ]
+      },
+      "enumCommands": []
+    }
+  },
+  "commands": {}
+}
