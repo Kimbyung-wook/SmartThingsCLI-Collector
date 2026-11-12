@@ -31,7 +31,7 @@ class EdgeDriverFilesTests(unittest.TestCase):
         self.assertEqual(camel("CPU Clock Test"), "cpuClockTest")
 
     def test_capabilities_presentations_profile_and_lua_agree(self):
-        self.assertEqual(len(self.caps), 5)
+        self.assertEqual(len(self.caps), 6)
         for path, cap in self.caps.items():
             cap_id = camel(cap["name"])
             (attr,) = cap["attributes"]
@@ -50,13 +50,21 @@ class EdgeDriverFilesTests(unittest.TestCase):
     def test_lua_reads_existing_status_fields(self):
         used = set(re.findall(r"data\.(\w+)", self.lua))
         ctx_fields = {"now_ms", "collect_ok", "collect_state", "collect_text", "last_ok_ms", "last_ok_text",
-                      "cpu_temp_c", "cpu_mhz", "load1", "disk_used_pct", "sysmon_fresh"}
+                      "cpu_temp_c", "cpu_mhz", "cpu_pct", "disk_used_pct", "sysmon_fresh"}
         self.assertTrue(used, "init.lua 가 응답 필드를 읽지 않음")
         self.assertLessEqual(used, ctx_fields)
         # api.hub_status 의 키 목록과 위 목록이 같아야 한다
         ctx = types.SimpleNamespace(now_ms=0, meta=lambda key: None, meta_int=lambda key: None,
                                     sysmon_current=None, db_path=ROOT / "config.yml")
         self.assertEqual(set(api.hub_status(ctx)), ctx_fields)
+
+    def test_cpu_temperature_is_custom_with_wide_range(self):
+        self.assertNotIn("- id: temperatureMeasurement", self.profile)
+        self.assertNotIn("temperatureMeasurement", self.lua)
+        cap = json.loads((ROOT / "capabilities" / "pi-cpu-temperature.json").read_text("utf-8"))
+        value = cap["attributes"]["cpuTemperature"]["schema"]["properties"]["value"]
+        self.assertLessEqual(value["minimum"], -20)
+        self.assertGreaterEqual(value["maximum"], 125)
 
     def test_driver_has_no_write_requests(self):
         self.assertNotRegex(self.lua, r'method\s*=\s*"(POST|PUT|DELETE|PATCH)"')

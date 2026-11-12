@@ -1,0 +1,39 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
+      }
+    ],
+    "actions": []
+  },
+  "detailView": [
+    {
+      "label": "CPU 온도",
+      "displayType": "state",
+      "state": {
+        "label": "{{cpuTemperature.value}}°{{cpuTemperature.unit}}"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "CPU 온도",
+        "displayType": "numberField",
+        "numberField": {
+          "value": "cpuTemperature.value",
+          "valueType": "number",
+          "unit": "cpuTemperature.unit",
+          "range": [
+            -20,
+            125
+          ]
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "angelconcert61717.piCpuTemperature",
+  "version": 1
+}

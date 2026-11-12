@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS minutes (
     temp_max    REAL,
     freq_avg    REAL,                  -- MHz
     load_avg    REAL,
+    cpu_avg     REAL,                  -- CPU 사용률 % (/proc/stat 표본 차이)
     mem_avail_mb INTEGER,              -- 그 분의 최솟값
     disk_free_gb REAL,
     undervolt_s INTEGER NOT NULL DEFAULT 0,
@@ -83,6 +84,7 @@ class Sample:
     temp_c: float | None = None
     freq_mhz: float | None = None
     load1: float | None = None
+    cpu_pct: float | None = None       # 직전 표본 이후 CPU 사용률 %, 첫 표본은 None
     mem_total_mb: int | None = None
     mem_avail_mb: int | None = None
     uptime_s: int | None = None
@@ -97,6 +99,32 @@ def _read(path: Path) -> str | None:
         return path.read_text("ascii", "replace").strip()
     except OSError:
         return None
+
+
+def parse_cpu_line(text: str) -> tuple[int, int] | None:
+    """/proc/stat 첫 줄(cpu 합계)에서 (전체 tick, 쉰 tick). 쉰 시간은 idle + iowait.
+
+    user~steal 8개만 더한다. guest 는 user 에 이미 들어 있다.
+    """
+    line = text.split("\n", 1)[0].split()
+    if not line or line[0] != "cpu":
+        return None
+    try:
+        values = [int(v) for v in line[1:9]]
+    except ValueError:
+        return None
+    if len(values) < 5:
+        return None
+    return sum(values), values[3] + values[4]
+
+
+def cpu_percent(prev: tuple[int, int] | None, cur: tuple[int, int] | None) -> float | None:
+    if prev is None or cur is None:
+        return None
+    total, idle = cur[0] - prev[0], cur[1] - prev[1]
+    if total <= 0 or idle < 0:
+        return None
+    return round(max(0.0, min(100.0, (total - idle) / total * 100)), 1)
 
 
 def parse_stat(text: str) -> tuple[str, int, int, int] | None:
@@ -123,6 +151,7 @@ class SystemReader:
         self._kthreads: set[str] = set()
         self._kthreads_at = 0.0
         self._labels: dict[tuple[str, int], str] = {}
+        self._cpu_prev: tuple[int, int] | None = None
 
     def _find_hwmon(self, name: str, attr: str) -> Path | None:
         root = self.sys / "class/hwmon"
@@ -153,6 +182,11 @@ class SystemReader:
                 s.load1 = float(raw.split()[0])
             except (ValueError, IndexError):
                 pass
+        raw = _read(self.proc / "stat")
+        cur = parse_cpu_line(raw) if raw else None
+        s.cpu_pct = cpu_percent(self._cpu_prev, cur)
+        if cur is not None:
+            self._cpu_prev = cur
         raw = _read(self.proc / "uptime")
         if raw:
             try:
@@ -255,6 +289,14 @@ class SysmonStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """이전 판에서 만든 DB 에 새 열을 더한다."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(minutes)")}
+        if "cpu_avg" not in cols:
+            with self.conn:
+                self.conn.execute("ALTER TABLE minutes ADD COLUMN cpu_avg REAL")
 
     def close(self) -> None:
         self.conn.close()
@@ -273,12 +315,13 @@ class SysmonStore:
     def add_minutes(self, rows: list[dict]) -> None:
         if not rows:
             return
+        rows = [{"cpu_avg": None, **r} for r in rows]  # cpu_avg 가 없던 판의 현재값 파일에서 온 행
         with self.conn:
             self.conn.executemany(
-                "INSERT OR REPLACE INTO minutes(ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, mem_avail_mb, "
-                "disk_free_gb, undervolt_s, overheat_s, throttle_s, samples) VALUES(:ts_ms, :temp_avg, :temp_min, "
-                ":temp_max, :freq_avg, :load_avg, :mem_avail_mb, :disk_free_gb, :undervolt_s, :overheat_s, "
-                ":throttle_s, :samples)",
+                "INSERT OR REPLACE INTO minutes(ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, cpu_avg, "
+                "mem_avail_mb, disk_free_gb, undervolt_s, overheat_s, throttle_s, samples) VALUES(:ts_ms, :temp_avg, "
+                ":temp_min, :temp_max, :freq_avg, :load_avg, :cpu_avg, :mem_avail_mb, :disk_free_gb, :undervolt_s, "
+                ":overheat_s, :throttle_s, :samples)",
                 rows,
             )
 
@@ -313,6 +356,7 @@ class _MinuteBucket:
         self.temps: list[float] = []
         self.freqs: list[float] = []
         self.loads: list[float] = []
+        self.cpus: list[float] = []
         self.mem_min: int | None = None
         self.undervolt = self.overheat = self.throttle = self.samples = 0
 
@@ -324,6 +368,8 @@ class _MinuteBucket:
             self.freqs.append(s.freq_mhz)
         if s.load1 is not None:
             self.loads.append(s.load1)
+        if s.cpu_pct is not None:
+            self.cpus.append(s.cpu_pct)
         if s.mem_avail_mb is not None:
             self.mem_min = s.mem_avail_mb if self.mem_min is None else min(self.mem_min, s.mem_avail_mb)
         self.undervolt += step_s if conditions.get("undervoltage") else 0
@@ -338,6 +384,7 @@ class _MinuteBucket:
             "temp_min": min(self.temps) if self.temps else None,
             "temp_max": max(self.temps) if self.temps else None,
             "freq_avg": avg(self.freqs), "load_avg": avg(self.loads),
+            "cpu_avg": round(sum(self.cpus) / len(self.cpus), 1) if self.cpus else None,
             "mem_avail_mb": self.mem_min, "disk_free_gb": disk_free_gb,
             "undervolt_s": self.undervolt, "overheat_s": self.overheat, "throttle_s": self.throttle,
             "samples": self.samples,
@@ -362,6 +409,13 @@ class Monitor:
         self.last_retention_ms: int | None = None
         self.active: dict[str, dict] = {}
         self.disk_free: float | None = None
+        self.cpu_recent: deque[tuple[int, float]] = deque()
+
+    def cpu_pct_1m(self) -> float | None:
+        """최근 60초 표본의 CPU 사용률 평균."""
+        if not self.cpu_recent:
+            return None
+        return round(sum(v for _, v in self.cpu_recent) / len(self.cpu_recent), 1)
 
     def begin(self, boot_id: str | None, now_ms: int, uptime_s: int | None) -> None:
         """시작 처리: 끝나지 못한 이벤트를 닫고, 새 부팅이면 기록한다."""
@@ -427,6 +481,10 @@ class Monitor:
         if self.last_flush_ms is None:
             self.last_flush_ms = s.ts_ms
         self._record_processes(s.ts_ms, procs)
+        if s.cpu_pct is not None:
+            self.cpu_recent.append((s.ts_ms, s.cpu_pct))
+        while self.cpu_recent and s.ts_ms - self.cpu_recent[0][0] >= MINUTE_MS:
+            self.cpu_recent.popleft()
         conditions = self.conditions(s)
         started = self._update_events(s, conditions)
 
@@ -450,6 +508,7 @@ class Monitor:
         """화면의 현재값. tmpfs 파일로 나간다."""
         free = self.disk()
         out = asdict(s)
+        out["cpu_pct_1m"] = self.cpu_pct_1m()
         out["active"] = sorted(self.active)
         out["top"] = self.top_processes(5)
         out["disk_free_gb"] = round(free[0], 2) if free else None

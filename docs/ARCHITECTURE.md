@@ -32,6 +32,8 @@ flowchart LR
 - 수집, 집계, 웹은 서로 직접 호출하지 않고 DB로만 연결
 - 하나가 멈춰도 나머지는 계속 동작
 - 그림에 없는 `stcollector-sysmon`: RPi 상태만 기록, 수집 DB와 분리된 `sysmon.db` 사용
+  - CPU 사용률: `/proc/stat` 첫 줄(cpu 합계)의 직전 표본과의 차이. 쉰 시간은 idle + iowait. `minutes.cpu_avg`(1분 평균)와 현재값 파일의 `cpu_pct`(순간), `cpu_pct_1m`(최근 60초 평균)에 기록
+  - `cpu_avg` 열이 없는 이전 DB는 모니터가 시작할 때 `ALTER TABLE`로 열을 더함. 대시보드 상태 탭은 그대로 load를 표시
 
 ## 수집
 
@@ -216,14 +218,15 @@ flowchart LR
 ```json
 {"now_ms":1763010300000,"collect_ok":true,"collect_state":"ok","collect_text":"정상",
  "last_ok_ms":1763010000000,"last_ok_text":"11-13 14:00","cpu_temp_c":52.6,"cpu_mhz":900.0,
- "load1":0.31,"disk_used_pct":76.2,"sysmon_fresh":true}
+ "cpu_pct":12.4,"disk_used_pct":76.2,"sysmon_fresh":true}
 ```
 
 | 필드 | 출처 |
 |---|---|
 | `collect_ok`, `collect_state`, `collect_text` | 아래 판정 |
 | `last_ok_ms`, `last_ok_text` | `meta.last_ok_ms`, 글자는 KST `월-일 시:분` |
-| `cpu_temp_c`, `cpu_mhz`, `load1` | 모니터 현재값. 30초 넘게 갱신되지 않았으면 `null`, `sysmon_fresh = false` |
+| `cpu_temp_c`, `cpu_mhz`, `cpu_pct` | 모니터 현재값. 30초 넘게 갱신되지 않았으면 `null`, `sysmon_fresh = false` |
+| `cpu_pct` | CPU 사용률 %, 최근 60초 표본 평균(`cpu_pct_1m`). 이전 판 모니터의 현재값이면 5초 순간값 |
 | `disk_used_pct` | DB가 있는 파일 시스템의 사용률 |
 
 수집 판정 (위에서부터 먼저 맞는 것)

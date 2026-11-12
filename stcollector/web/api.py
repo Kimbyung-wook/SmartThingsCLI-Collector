@@ -862,7 +862,8 @@ def hub_status(ctx: Context) -> dict:
         "last_ok_text": _kst_text(last_ok),
         "cpu_temp_c": num("temp_c", 1),
         "cpu_mhz": num("freq_mhz", 0),
-        "load1": num("load1", 2),
+        # 최근 1분 평균. 이전 판 모니터의 현재값 파일에는 cpu_pct_1m 이 없어 순간값으로 대신한다.
+        "cpu_pct": num("cpu_pct_1m", 1) if num("cpu_pct_1m", 1) is not None else num("cpu_pct", 1),
         "disk_used_pct": disk_pct,
         "sysmon_fresh": fresh,
     }

@@ -11,19 +11,24 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
 | 항목 | capability | 속성 | 값 |
 |---|---|---|---|
 | 수집 이상 알림 | `contactSensor` (표준) | `contact` | 닫힘 = 정상, 열림 = 이상 |
-| CPU 온도 | `temperatureMeasurement` (표준) | `temperature` | °C |
+| CPU 온도 | `<namespace>.piCpuTemperature` | `cpuTemperature` | °C, 범위 -20~125 |
 | SmartThings 수집 | `<namespace>.piCollectStatus` | `collectStatus` | `정상`, `이력 지연 20분`, `수집 멈춤 45분`, `재인증 필요`, `수집 기록 없음`, `RPi 응답 없음` |
 | 마지막 수집 | `<namespace>.piLastCollect` | `lastCollect` | `11-13 14:05` (KST, 월-일 시:분) |
 | CPU 클럭 | `<namespace>.piClockSpeed` | `clockSpeed` | MHz |
-| Load (1분) | `<namespace>.piLoadAverage` | `loadAverage` | 숫자 |
+| CPU 사용률 | `<namespace>.piCpuUsage` | `cpuUsage` | %, 최근 1분 평균 |
 | 디스크 사용 | `<namespace>.piDiskUsage` | `diskUsage` | % (DB가 있는 파일 시스템) |
 | 새로고침 | `refresh` (표준) | — | 아래로 당기면 바로 한 번 읽음 |
 
 - 열림(이상)이 되는 경우
   - RPi 판정: 아래 [수집 정상 판정](#수집-정상-판정)에서 이상
   - 허브 판정: `/hub/status`를 3회 연속 못 읽음 (기본 주기로 약 3분). RPi 꺼짐, 웹 서비스 중지, 주소 설정 오류, 허브 IP 미허용
-- 온도·클럭·load는 RPi 모니터(`stcollector-sysmon`)의 현재값이 30초 안에 갱신됐을 때만 바뀐다. 모니터가 멈추면 마지막 값이 그대로 남는다.
-- 같은 값을 매번 보내지 않는다. 온도 0.5°C, load 0.1, 디스크 0.5%, 클럭 1MHz 이상 바뀔 때만 이벤트를 보낸다.
+- CPU 온도를 표준 `temperatureMeasurement`로 두지 않은 이유
+  - 사용자 결정: RPi CPU 온도는 80~100°C를 넘을 수 있음
+  - 표준 capability를 쓴 다른 드라이버(Klipper 3D 프린터) 작성자가 루틴 조건 온도가 -20~50°C로 제한된다고 보고함 (공식 문서로는 확인 못 함)
+  - 앱이 표준 온도를 방 온도처럼 다룰 수 있어 실내 온도와 섞일 우려
+- CPU 사용률은 RPi 모니터가 `/proc/stat`의 표본 차이로 계산한다. load average는 단위 없는 대기 작업 수라 %로 보이기 어려워 바꿨다.
+- 온도·클럭·CPU 사용률은 RPi 모니터(`stcollector-sysmon`)의 현재값이 30초 안에 갱신됐을 때만 바뀐다. 모니터가 멈추면 마지막 값이 그대로 남는다.
+- 같은 값을 매번 보내지 않는다. 온도 0.5°C, CPU 사용률 5%p, 디스크 0.5%, 클럭 1MHz 이상 바뀔 때만 이벤트를 보낸다.
 
 ## 수집 정상 판정
 
@@ -54,26 +59,28 @@ PowerShell에서 저장소 루트(`iot`)로 이동한 뒤 진행한다. `<namesp
 $NS = "<namespace>"
 ```
 
-### 1. 커스텀 capability 5개 만들기
+### 1. 커스텀 capability 6개 만들기
 
 ```powershell
 smartthings capabilities:create -i edge-driver/capabilities/pi-collect-status.json
 smartthings capabilities:create -i edge-driver/capabilities/pi-last-collect.json
+smartthings capabilities:create -i edge-driver/capabilities/pi-cpu-temperature.json
 smartthings capabilities:create -i edge-driver/capabilities/pi-clock-speed.json
-smartthings capabilities:create -i edge-driver/capabilities/pi-load-average.json
+smartthings capabilities:create -i edge-driver/capabilities/pi-cpu-usage.json
 smartthings capabilities:create -i edge-driver/capabilities/pi-disk-usage.json
 ```
 
-- 결과의 id가 `<namespace>.piCollectStatus`, `piLastCollect`, `piClockSpeed`, `piLoadAverage`, `piDiskUsage`인지 확인한다. 다르면 프로파일·Lua·presentation의 id를 결과에 맞춘다.
+- 결과의 id가 `<namespace>.piCollectStatus`, `piLastCollect`, `piCpuTemperature`, `piClockSpeed`, `piCpuUsage`, `piDiskUsage`인지 확인한다. 다르면 프로파일·Lua·presentation의 id를 결과에 맞춘다.
 - 앞서 시험으로 만든 `cpuClockTest`는 쓰지 않는다.
 
-### 2. capability presentation 5개 만들기
+### 2. capability presentation 6개 만들기
 
 ```powershell
 smartthings capabilities:presentation:create "$NS.piCollectStatus" 1 -i edge-driver/capabilities/pi-collect-status.presentation.json
 smartthings capabilities:presentation:create "$NS.piLastCollect" 1 -i edge-driver/capabilities/pi-last-collect.presentation.json
+smartthings capabilities:presentation:create "$NS.piCpuTemperature" 1 -i edge-driver/capabilities/pi-cpu-temperature.presentation.json
 smartthings capabilities:presentation:create "$NS.piClockSpeed" 1 -i edge-driver/capabilities/pi-clock-speed.presentation.json
-smartthings capabilities:presentation:create "$NS.piLoadAverage" 1 -i edge-driver/capabilities/pi-load-average.presentation.json
+smartthings capabilities:presentation:create "$NS.piCpuUsage" 1 -i edge-driver/capabilities/pi-cpu-usage.presentation.json
 smartthings capabilities:presentation:create "$NS.piDiskUsage" 1 -i edge-driver/capabilities/pi-disk-usage.presentation.json
 ```
 
@@ -177,14 +184,16 @@ sudo systemctl restart stcollector-web
 - 설정(preferences) 문법, `infoChanged`의 `args.old_st_store.preferences`: [Preferences 문서](https://developer.smartthings.com/docs/devices/preferences)
 - capability JSON, presentation 생성 명령: [Custom Capabilities](https://developer.smartthings.com/docs/devices/capabilities/custom-capabilities), [Capability Presentations](https://developer.smartthings.com/docs/devices/capabilities/capability-presentations)
 - CLI 명령 이름: [smartthings-cli](https://github.com/SmartThingsCommunity/smartthings-cli)
+- 구조 참고 (코드 복사 없음): toddaustin07의 [PCControl](https://github.com/toddaustin07/PCControl), [HTTPDevices](https://github.com/toddaustin07/HTTPDevices) (Apache-2.0). discovery에서 LAN 검색 없이 `try_create_device`로 기기 하나를 만드는 방식, 설정의 `IP:포트` 문자열, `capabilities["<namespace>.<id>"]` 참조, 프로파일에 `vid`·`mnmn` 없이 커스텀 capability를 쓰는 방식이 같다
+- 폴링 방식: 허브가 LAN 기기의 로컬 JSON을 60초마다 한 번씩 읽는 커뮤니티 드라이버(Davis AirLink)와 같은 구조. RPi에서 허브로 밀어 넣는 방식은 만들지 않는다
 
 추정이거나 확인 못 한 점
 
 - JSON 모듈 경로: 문서에 경로가 없다. `st.json`을 먼저 쓰고 없으면 `dkjson`을 쓰게 했다.
-- 커스텀 capability의 숫자 속성에 `unit`을 두는 스키마: 표준 capability와 같은 모양(`unit`에 `enum`)으로 썼다. 공식 예제는 문자열 속성만 있었다.
+- 커스텀 capability의 숫자 속성에 `unit`을 두는 스키마: 표준 capability와 같은 모양(`unit`에 `enum`)으로 썼다. 공식 예제는 문자열 속성만 있었다. CPU 온도 단위는 `C`로 두고 표시 형식에서 `°`를 붙였다(`52.6°C`로 보일 것으로 추정).
 - presentation의 `detailView` `displayType: "state"`와 `state.label`, 루틴 조건의 `numberField`·`textField` 세부 키: 문서의 표시 형식 목록에는 있으나 예제로는 확인 못 했다. 생성 명령이 거부하면 오류 문구에 맞춰 고친다.
 - presentation 라벨의 한글: 그대로 표시될 것으로 본다. 깨지면 영문으로 바꾼다.
-- 프로파일의 `metadata`(`vid`, `mnmn`): 넣지 않았다. 앱 상세 화면에 커스텀 항목이 안 보이면 device configuration을 만들어 `vid`를 넣어야 할 수 있다.
+- 프로파일의 `metadata`(`vid`, `mnmn`): 넣지 않았다. 위 커뮤니티 드라이버들도 넣지 않았다. 그래도 앱 상세 화면에 커스텀 항목이 안 보이면 device configuration을 만들어 `vid`를 넣어야 할 수 있다.
 - 설정 이름 길이 제한, `edge:channels:create`의 옵션: 확인 못 했다. 위 명령은 대화형으로 쓰는 것을 전제로 했다.
 - `try_create_device`를 discovery 안에서 바로 부르는 방식은 문서의 함수 정의와 예제에 맞지만, LAN 검색 없이 쓰는 공식 예제는 찾지 못했다.
 - Lua 코드는 허브나 PC에서 실행해 보지 않았다. 첫 설치 때 logcat으로 확인한다.

@@ -2,37 +2,38 @@
   "dashboard": {
     "states": [
       {
-        "label": "{{loadAverage.value}}"
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
       }
     ],
     "actions": []
   },
   "detailView": [
     {
-      "label": "Load (1분)",
+      "label": "CPU 사용률",
       "displayType": "state",
       "state": {
-        "label": "{{loadAverage.value}}"
+        "label": "{{cpuUsage.value}}{{cpuUsage.unit}}"
       }
     }
   ],
   "automation": {
     "conditions": [
       {
-        "label": "Load (1분)",
+        "label": "CPU 사용률",
         "displayType": "numberField",
         "numberField": {
-          "value": "loadAverage.value",
+          "value": "cpuUsage.value",
           "valueType": "number",
+          "unit": "cpuUsage.unit",
           "range": [
             0,
-            1000
+            100
           ]
         }
       }
     ],
     "actions": []
   },
-  "id": "angelconcert61717.piLoadAverage",
+  "id": "angelconcert61717.piCpuUsage",
   "version": 1
 }

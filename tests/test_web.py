@@ -262,7 +262,7 @@ class HubStatusTests(TempDirMixin, unittest.TestCase):
     def test_allowed_address_without_login(self):
         now = BASE + 3 * HOUR_MS
         port = self.start(["127.0.0.1"], now_ms=now, current={
-            "ts_ms": now - 3000, "temp_c": 51.234, "freq_mhz": 900.0, "load1": 0.42,
+            "ts_ms": now - 3000, "temp_c": 51.234, "freq_mhz": 900.0, "cpu_pct": 80.0, "cpu_pct_1m": 12.34,
         })
         status, hdrs, data = self.get(port)
         self.assertEqual(status, 200)
@@ -273,7 +273,7 @@ class HubStatusTests(TempDirMixin, unittest.TestCase):
         self.assertEqual(body["collect_text"], "정상")
         self.assertEqual(body["cpu_temp_c"], 51.2)
         self.assertEqual(body["cpu_mhz"], 900)
-        self.assertEqual(body["load1"], 0.42)
+        self.assertEqual(body["cpu_pct"], 12.3)  # 순간값이 아니라 1분 평균
         self.assertIsInstance(body["disk_used_pct"], float)
         self.assertRegex(body["last_ok_text"], r"^\d\d-\d\d \d\d:\d\d$")
         text = data.decode()
@@ -287,6 +287,11 @@ class HubStatusTests(TempDirMixin, unittest.TestCase):
         body = json.loads(self.get(port)[2])
         self.assertIsNone(body["cpu_temp_c"])
         self.assertFalse(body["sysmon_fresh"])
+
+    def test_cpu_pct_falls_back_to_instant_value(self):
+        now = BASE + 3 * HOUR_MS
+        port = self.start(["127.0.0.1"], now_ms=now, current={"ts_ms": now - 1000, "cpu_pct": 33.3})
+        self.assertEqual(json.loads(self.get(port)[2])["cpu_pct"], 33.3)
 
     def test_other_paths_still_need_login(self):
         port = self.start(["127.0.0.1"])

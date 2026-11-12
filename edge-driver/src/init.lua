@@ -25,8 +25,9 @@ end
 local NS = "angelconcert61717"
 local capCollect = capabilities[NS .. ".piCollectStatus"]
 local capLast = capabilities[NS .. ".piLastCollect"]
+local capTemp = capabilities[NS .. ".piCpuTemperature"]
 local capClock = capabilities[NS .. ".piClockSpeed"]
-local capLoad = capabilities[NS .. ".piLoadAverage"]
+local capCpu = capabilities[NS .. ".piCpuUsage"]
 local capDisk = capabilities[NS .. ".piDiskUsage"]
 
 local DEVICE_NETWORK_ID = "stcollector-rpi-status"
@@ -131,11 +132,11 @@ local function poll(device)
   emit_changed(device, "last", type(data.last_ok_text) == "string" and data.last_ok_text or "-", nil,
     function(v) return capLast.lastCollect({ value = v }) end)
   emit_changed(device, "temp", num(data.cpu_temp_c), 0.5,
-    function(v) return capabilities.temperatureMeasurement.temperature({ value = v, unit = "C" }) end)
+    function(v) return capTemp.cpuTemperature({ value = v, unit = "C" }) end)
   emit_changed(device, "clock", num(data.cpu_mhz), 1,
     function(v) return capClock.clockSpeed({ value = v, unit = "MHz" }) end)
-  emit_changed(device, "load", num(data.load1), 0.1,
-    function(v) return capLoad.loadAverage({ value = v }) end)
+  emit_changed(device, "cpu", num(data.cpu_pct), 5,
+    function(v) return capCpu.cpuUsage({ value = v, unit = "%" }) end)
   emit_changed(device, "disk", num(data.disk_used_pct), 0.5,
     function(v) return capDisk.diskUsage({ value = v, unit = "%" }) end)
 end

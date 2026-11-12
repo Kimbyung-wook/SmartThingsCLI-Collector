@@ -1,14 +1,21 @@
 {
-  "name": "Pi Load Average",
+  "name": "Pi Cpu Temperature",
   "attributes": {
-    "loadAverage": {
+    "cpuTemperature": {
       "schema": {
         "type": "object",
         "properties": {
           "value": {
             "type": "number",
-            "minimum": 0,
-            "maximum": 1000
+            "minimum": -20,
+            "maximum": 125
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "C"
+            ],
+            "default": "C"
           }
         },
         "additionalProperties": false,
