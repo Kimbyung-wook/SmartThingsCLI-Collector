@@ -41,7 +41,7 @@ SYSMON_STALE_MS = 30_000
 SYSMON_EVENT_LIMIT = 100
 SYSMON_ALERT_KINDS = {
     "undervoltage": ("critical", "Raspberry Pi 전압 부족이 감지되고 있습니다. 상태 탭에서 직전 작업을 볼 수 있습니다."),
-    "throttled": ("warning", "Raspberry Pi 클럭이 전원·온도 때문에 제한되고 있습니다."),
+    "throttled": ("warning", "Raspberry Pi CPU 클럭이 전원·온도 때문에 제한되고 있습니다."),
     "overheat": ("critical", "Raspberry Pi 온도가 과열 기준을 넘었습니다."),
 }
 

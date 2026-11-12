@@ -439,7 +439,7 @@
       const uptime = c.uptime_s == null ? '—' : duration(c.uptime_s);
       head.append(h('div', { class: 'stats' },
         stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
-        stat('클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
+        stat('CPU 클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
         stat('load (1분)', c.load1 != null ? fmt(c.load1, 2) : '—'),
         stat('여유 메모리', c.mem_avail_mb != null ? fmt(c.mem_avail_mb) + ' MB' : '—', c.mem_total_mb ? '전체 ' + fmt(c.mem_total_mb) + ' MB' : null),
         stat('디스크 여유', c.disk_free_gb != null ? fmt(c.disk_free_gb, 1) + ' GB' : '—', c.disk_total_gb ? '전체 ' + fmt(c.disk_total_gb, 1) + ' GB' : null),
@@ -479,9 +479,9 @@
       if (key) charts.append(key);
       out.push(
         chart('CPU 온도', '온도', q.temp_avg, { min: q.temp_min, max: q.temp_max, unit: '°C', digits: 1 }),
-        chart('클럭', '클럭', q.freq, { unit: 'MHz', digits: 0 }),
+        chart('CPU 클럭', 'CPU 클럭', q.freq, { unit: 'MHz', digits: 0 }),
         chart('load', 'load', q.load, { unit: '', digits: 2, domain: [0, loadTop] }),
-        tableView(() => table(['시각', '온도 °C', '클럭 MHz', 'load', '전압 부족 초'],
+        tableView(() => table(['시각', '온도 °C', 'CPU 클럭 MHz', 'load', '전압 부족 초'],
           q.buckets.map((b, i) => [stamp(b), fmt(q.temp_avg[i], 1), fmt(q.freq[i]), fmt(q.load[i], 2), uv[i]]).filter((_, i) => q.coverage[i] != null), i => i > 0)));
     } else {
       charts.append(empty('이 기간 기록 없음', '모니터가 기록을 남기면 표시'));
