@@ -227,8 +227,10 @@ flowchart LR
 |---|---|
 | `collect_ok`, `collect_state`, `collect_text` | 아래 판정 |
 | `last_ok_ms`, `last_ok_text` | `meta.last_ok_ms`, 글자는 KST `월-일 시:분` |
-| `cpu_temp_c`, `cpu_mhz`, `cpu_pct` | 모니터 현재값. 30초 넘게 갱신되지 않았으면 `null`, `sysmon_fresh = false` |
-| `cpu_pct` | CPU 사용률 %, 최근 60초 표본 평균(`cpu_pct_1m`). 이전 판 모니터의 현재값이면 5초 순간값 |
+| `cpu_temp_c`, `cpu_mhz`, `cpu_pct` | 모니터 값. 현재값 파일이 30초 넘게 갱신되지 않았으면 `null`, `sysmon_fresh = false` |
+| `cpu_temp_c` | CPU 온도 °C, 가장 최근 끝난 1분의 평균(`minutes.temp_avg`, DB에 아직 없으면 현재값 파일의 `pending`). 그 분이 3분보다 오래됐으면 5초 순간값 |
+| `cpu_pct` | CPU 사용률 %, 끝난 1분 요약 최근 5개의 `cpu_avg` 평균 (빈 값은 뺌). 없으면 최근 60초 평균(`cpu_pct_1m`), 그것도 없으면 순간값 |
+| `cpu_mhz` | CPU 클럭, 5초 순간값 |
 | `disk_used_pct` | DB가 있는 파일 시스템의 사용률 |
 
 수집 판정 (위에서부터 먼저 맞는 것)

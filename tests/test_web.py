@@ -10,7 +10,8 @@ import urllib.parse
 from stcollector.config import ConfigError
 from stcollector.db import Database
 from stcollector.rollup import HOUR_MS, run_rollup
-from stcollector.settings import RollupSettings, WebSettings
+from stcollector.settings import RollupSettings, WebSettings, sysmon_db_path
+from stcollector.sysmon import SysmonStore
 from stcollector.web import api, server
 from stcollector.web.session import LoginLimiter, Sessions, hash_password, valid_hash, verify_password
 from tests.helpers import TempDirMixin
@@ -292,6 +293,46 @@ class HubStatusTests(TempDirMixin, unittest.TestCase):
         now = BASE + 3 * HOUR_MS
         port = self.start(["127.0.0.1"], now_ms=now, current={"ts_ms": now - 1000, "cpu_pct": 33.3})
         self.assertEqual(json.loads(self.get(port)[2])["cpu_pct"], 33.3)
+
+    def minutes(self, rows):
+        store = SysmonStore(sysmon_db_path(self.tmp / "h.db"))
+        base = dict(temp_min=0, temp_max=0, freq_avg=900.0, load_avg=0.1, mem_avail_mb=1, disk_free_gb=1,
+                    undervolt_s=0, overheat_s=0, throttle_s=0, samples=12)
+        store.add_minutes([dict(base, ts_ms=ts, temp_avg=t, cpu_avg=c) for ts, t, c in rows])
+        store.close()
+
+    def test_temperature_is_last_minute_and_cpu_is_five_minute_average(self):
+        now = BASE + 3 * HOUR_MS + 20_000  # 분 시작 20초 뒤
+        m = now - now % 60_000
+        self.minutes([(m - 360_000, 70.0, 90.0),   # 6분 전: 5분 창 밖
+                      (m - 300_000, 50.0, 10.0), (m - 240_000, 51.0, 20.0), (m - 180_000, 52.0, None),
+                      (m - 120_000, 53.0, 30.0)])
+        port = self.start(["127.0.0.1"], now_ms=now, current={
+            "ts_ms": now - 2000, "temp_c": 60.0, "cpu_pct": 99.0, "cpu_pct_1m": 88.0,
+            "pending": [{"ts_ms": m - 60_000, "temp_avg": 54.44, "cpu_avg": 40.0},   # 아직 DB에 없는 끝난 분
+                        {"ts_ms": m, "temp_avg": 65.0, "cpu_avg": 100.0}],          # 진행 중인 분: 뺌
+        })
+        body = json.loads(self.get(port)[2])
+        self.assertEqual(body["cpu_temp_c"], 54.4)
+        self.assertEqual(body["cpu_pct"], 25.0)  # (10 + 20 + 30 + 40) / 4, 빈 값은 뺌
+
+    def test_old_minute_temperature_falls_back_to_current(self):
+        now = BASE + 3 * HOUR_MS
+        m = now - now % 60_000
+        self.minutes([(m - 300_000, 50.0, 10.0)])  # 5분 전 분은 온도로 쓰기엔 오래됨
+        port = self.start(["127.0.0.1"], now_ms=now, current={"ts_ms": now - 1000, "temp_c": 61.2, "cpu_pct": 1.0})
+        body = json.loads(self.get(port)[2])
+        self.assertEqual(body["cpu_temp_c"], 61.2)
+        self.assertEqual(body["cpu_pct"], 10.0)
+
+    def test_stale_monitor_ignores_minutes(self):
+        now = BASE + 3 * HOUR_MS
+        m = now - now % 60_000
+        self.minutes([(m - 60_000, 50.0, 10.0)])
+        port = self.start(["127.0.0.1"], now_ms=now, current={"ts_ms": now - 120_000, "temp_c": 50.0})
+        body = json.loads(self.get(port)[2])
+        self.assertIsNone(body["cpu_temp_c"])
+        self.assertIsNone(body["cpu_pct"])
 
     def test_other_paths_still_need_login(self):
         port = self.start(["127.0.0.1"])

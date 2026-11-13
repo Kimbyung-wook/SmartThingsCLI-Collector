@@ -11,11 +11,11 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
 | 앱 이름 (한국어) | 영문 이름 | capability | 속성 | 값 |
 |---|---|---|---|---|
 | 열림/닫힘 (기기 대표 상태) | Contact | `contactSensor` (표준) | `contact` | 닫힘 = 수집 정상, 열림 = 이상 |
-| CPU 온도 | CPU Temperature | `<namespace>.cpuTemperature` | `cpuTemperature` | °C, 범위 -20~125 |
+| CPU 온도 | CPU Temperature | `<namespace>.cpuTemperature` | `cpuTemperature` | 정수 °C, 1분 평균, 범위 -20~125 |
 | CPU 클럭 | CPU Clock | `<namespace>.cpuClock` | `cpuClock` | MHz |
-| CPU 사용률 | CPU Usage | `<namespace>.cpuUsage` | `cpuUsage` | %, 최근 1분 평균 |
+| CPU 사용률 | CPU Usage | `<namespace>.cpuUsage` | `cpuUsage` | 정수 %, 최근 5분 평균 |
 | 수집 상태 | Collect Status | `<namespace>.collectStatus` | `collectStatus` | `정상`, `이력 지연 20분`, `수집 멈춤 45분`, `재인증 필요`, `수집 기록 없음`, `RPi 응답 없음` |
-| 마지막 수집 시각 | Last Collect Time | `<namespace>.lastCollectTime` | `lastCollectTime` | `11-13 14:05` (KST, 월-일 시:분) |
+| 마지막 수집 시각 | Last Collect Time | `<namespace>.lastCollectTime` | `lastCollectTime` | `11-13 14:05` (KST, 월-일 시:분). 수집이 이상일 때만 갱신 |
 | 디스크 사용량 | Disk Usage | `<namespace>.diskUsage` | `diskUsage` | % (DB가 있는 파일 시스템) |
 | 새로고침 | Refresh | `refresh` (표준) | — | 아래로 당기면 바로 한 번 읽음 |
 
@@ -32,7 +32,21 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
   - 앱이 표준 온도를 방 온도처럼 다룰 수 있어 실내 온도와 섞일 우려
 - CPU 사용률은 RPi 모니터가 `/proc/stat`의 표본 차이로 계산한다. load average는 단위 없는 대기 작업 수라 %로 보이기 어려워 바꿨다.
 - 온도·클럭·CPU 사용률은 RPi 모니터(`stcollector-sysmon`)의 현재값이 30초 안에 갱신됐을 때만 바뀐다. 모니터가 멈추면 마지막 값이 그대로 남는다.
-- 같은 값을 매번 보내지 않는다. 온도 0.5°C, CPU 사용률 5%p, 디스크 0.5%, 클럭 1MHz 이상 바뀔 때만 이벤트를 보낸다.
+- 앱 기록을 줄이려고 의미 있는 변화만 보낸다. 기준은 `src/init.lua` 맨 위 상수다.
+
+| 항목 | RPi가 주는 값 | 보내는 조건 | 보내는 값 |
+|---|---|---|---|
+| CPU 온도 | 끝난 1분의 평균 | 마지막으로 보낸 값과 1°C 이상 차이 (`TEMP_STEP_C`) | 정수 °C로 반올림 |
+| CPU 사용률 | 끝난 1분 요약 최근 5개의 평균 | 마지막으로 보낸 값과 5%p 이상 차이 (`CPU_STEP_PCT`) | 정수 %로 반올림 |
+| 디스크 사용량 | 현재 | 1%p 이상 차이 (`DISK_STEP_PCT`) | 소수 첫째 자리 |
+| CPU 클럭 | 5초 순간값 | 1MHz 이상 차이 (`CLOCK_STEP_MHZ`) | MHz |
+| 마지막 수집 시각 | 마지막 수집 성공 시각 | 수집이 정상인 동안은 보내지 않음. 정상이 아니게 되면 바로, 이상이 이어지는 동안 바뀔 때마다, 정상으로 돌아오면 한 번 | 문구 |
+| 수집 상태, 열림/닫힘 | 판정 결과 | 바뀔 때 바로 | 문구, 열림/닫힘 |
+
+- 비교 기준은 "마지막으로 보낸 값"이다. 예: 57°C를 보낸 뒤 57.4 ↔ 57.9로 흔들려도 보내지 않고, 58.0이 되면 58을 보낸다.
+- 이상 판단: RPi의 `collect_ok`가 `false`이거나, 허브가 3회 연속 읽지 못함. RPi가 응답하지 않을 때는 새 시각이 없어 마지막으로 보낸 시각을 한 번 다시 보낸다.
+- 마지막으로 보낸 값은 `device:set_field(..., { persist = true })`로 저장해 드라이버·허브 재시작 뒤에도 같은 값을 다시 올리지 않는다. 이 판으로 처음 바꿀 때는 저장된 값이 없어 항목마다 한 번씩 보낸다.
+- 처음 기기를 만들었을 때는 마지막 수집 시각도 한 번 보낸다 (빈 칸으로 두지 않게).
 
 ## 수집 정상 판정
 

@@ -962,6 +962,46 @@ def collect_health(ctx: Context) -> tuple[str, bool, int | None]:
     return "ok", True, None
 
 
+HUB_CPU_WINDOW_MIN = 5  # CPU 사용률: 끝난 1분 요약 최근 5개의 평균
+HUB_TEMP_MAX_AGE_MS = 3 * 60_000  # CPU 온도 1분 평균으로 쓸 끝난 분의 최대 나이 (분 시작 기준)
+
+
+def _hub_minutes(ctx: Context, current: dict | None) -> dict[int, tuple]:
+    """허브용 최근 끝난 분들의 {ts_ms: (temp_avg, cpu_avg)}. 진행 중인 분은 뺀다.
+
+    DB 에 아직 안 들어간 분은 현재값 파일의 pending 에서 가져온다 (pending 끝에는 진행 중인 분도 있다).
+    """
+    end = ctx.now_ms - ctx.now_ms % 60_000
+    start = end - HUB_CPU_WINDOW_MIN * 60_000
+    rows: dict[int, tuple] = {}
+    path = ctx.sysmon_db
+    if path is not None and Path(path).exists():
+        try:
+            conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            conn = None
+        if conn is not None:
+            try:
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(minutes)")}
+                cpu = "cpu_avg" if "cpu_avg" in cols else "NULL"
+                for ts, temp, cpu_avg in conn.execute(
+                        f"SELECT ts_ms, temp_avg, {cpu} FROM minutes WHERE ts_ms>=? AND ts_ms<?", (start, end)):
+                    rows[ts] = (temp, cpu_avg)
+            except sqlite3.Error:  # 모니터가 표를 만들기 전
+                pass
+            finally:
+                conn.close()
+    for p in (current or {}).get("pending") or []:
+        ts = p.get("ts_ms") if isinstance(p, dict) else None
+        if isinstance(ts, int) and start <= ts < end:
+            rows[ts] = (p.get("temp_avg"), p.get("cpu_avg"))
+    return rows
+
+
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def hub_status(ctx: Context) -> dict:
     state, ok, minutes = collect_health(ctx)
     text = HUB_STATE_TEXT[state] + (f" {minutes}분" if minutes is not None else "")
@@ -978,6 +1018,20 @@ def hub_status(ctx: Context) -> dict:
         disk_pct = _r(disk.used / disk.total * 100, 1) if disk.total else None
     except OSError:
         disk_pct = None
+
+    # 앱 기록을 줄이려고 순간값 대신 평균을 보낸다. 분 기록이 아직 없으면(모니터 막 시작) 예전처럼 현재값.
+    temp_c = num("temp_c", 1)
+    cpu_pct = num("cpu_pct_1m", 1) if num("cpu_pct_1m", 1) is not None else num("cpu_pct", 1)
+    if fresh:
+        recent = _hub_minutes(ctx, current)
+        temps = [(ts, t) for ts, (t, _) in recent.items() if _number(t) is not None]
+        if temps:
+            ts, t = max(temps)
+            if ctx.now_ms - ts <= HUB_TEMP_MAX_AGE_MS:
+                temp_c = _r(float(t), 1)
+        cpus = [_number(c) for _, c in recent.values() if _number(c) is not None]
+        if cpus:
+            cpu_pct = _r(sum(cpus) / len(cpus), 1)
     return {
         "now_ms": ctx.now_ms,
         "collect_ok": ok,
@@ -985,10 +1039,9 @@ def hub_status(ctx: Context) -> dict:
         "collect_text": text,
         "last_ok_ms": last_ok,
         "last_ok_text": _kst_text(last_ok),
-        "cpu_temp_c": num("temp_c", 1),
+        "cpu_temp_c": temp_c,  # 가장 최근 끝난 1분의 평균
         "cpu_mhz": num("freq_mhz", 0),
-        # 최근 1분 평균. 이전 판 모니터의 현재값 파일에는 cpu_pct_1m 이 없어 순간값으로 대신한다.
-        "cpu_pct": num("cpu_pct_1m", 1) if num("cpu_pct_1m", 1) is not None else num("cpu_pct", 1),
+        "cpu_pct": cpu_pct,  # 끝난 1분 요약 최근 5개(cpu_avg)의 평균
         "disk_used_pct": disk_pct,
         "sysmon_fresh": fresh,
     }
