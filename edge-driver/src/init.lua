@@ -29,6 +29,7 @@ local capTemp = capabilities[NS .. ".cpuTemperature"]
 local capClock = capabilities[NS .. ".cpuClock"]
 local capCpu = capabilities[NS .. ".cpuUsage"]
 local capDisk = capabilities[NS .. ".diskUsage"]
+local capUpdate = capabilities[NS .. ".updateNow"]  -- 기기 타일의 "지금 최신화" 버튼 (명령만 있고 속성은 없음)
 
 local DEVICE_NETWORK_ID = "stcollector-rpi-status"
 local PROFILE = "stcollector-rpi.v1"
@@ -45,6 +46,10 @@ local DISK_STEP_PCT = 1        -- 디스크 사용량 %
 local CLOCK_STEP_MHZ = 1       -- CPU 클럭 MHz
 -- 마지막 수집 시각: 수집이 정상인 동안은 보내지 않는다. 정상이 아니게 되면 바로 보내고,
 -- 이상이 이어지는 동안 바뀔 때마다 보내고, 정상으로 돌아오면 한 번 보낸다.
+
+-- 새로고침(아래로 당기기, refresh 명령)과 타일 버튼(updateNow.update)은 위 기준을 무시하고 모든 값을 보낸다.
+-- 이 간격 안에 다시 누르면 RPi 를 다시 읽지 않는다.
+local FORCE_MIN_INTERVAL_S = 5
 
 -- 마지막으로 보낸 값은 persist 로 저장해 드라이버·허브 재시작 뒤에도 같은 값을 다시 올리지 않는다.
 local PERSIST = { persist = true }
@@ -122,9 +127,11 @@ local function emit_last_collect(device, text)
 end
 
 -- 마지막 수집 시각. collect_ok 가 false 이거나 RPi 가 응답하지 않으면 이상으로 본다.
-local function update_last_collect(device, ok, text)
+local function update_last_collect(device, ok, text, force)
   local was_bad = device:get_field("collect_bad") == true
-  if ok then
+  if force then  -- 최신화 요청: 정상이어도 지금 시각을 보냄
+    emit_changed(device, "last", text or "-", nil, function(v) return capLast.lastCollectTime({ value = v }) end, nil, true)
+  elseif ok then
     if was_bad or device:get_field("sent_last") == nil then  -- 정상으로 돌아옴(같은 문구여도 한 번), 또는 처음 한 번
       emit_changed(device, "last", text or "-", nil, function(v) return capLast.lastCollectTime({ value = v }) end, nil, true)
     end
@@ -138,21 +145,28 @@ local function update_last_collect(device, ok, text)
   end
 end
 
-local function set_alert(device, alert)
+local function set_alert(device, alert, force)
   emit_changed(device, "contact", alert and "open" or "closed", nil, function(v)
     if v == "open" then return capabilities.contactSensor.contact.open() end
     return capabilities.contactSensor.contact.closed()
-  end)
+  end, nil, force)
 end
 
-local function poll(device)
+-- force: 최신화 요청. 모든 항목을 기준값과 상관없이 보내고, 보낸 값은 그대로 다음 비교 기준이 된다.
+local function poll(device, force)
   local addr = clean_address(device.preferences.rpiAddress)
   if not addr then
     log.warn("RPi 주소 설정이 올바르지 않습니다: " .. tostring(device.preferences.rpiAddress))
-    emit_changed(device, "collect", "RPi 주소 설정 확인", nil, function(v) return capCollect.collectStatus({ value = v }) end)
+    emit_changed(device, "collect", "RPi 주소 설정 확인", nil, function(v) return capCollect.collectStatus({ value = v }) end, nil, force)
     return
   end
   local data, err = fetch(addr)
+  if not data and force then
+    -- 최신화 요청의 실패는 실패 횟수에 넣지 않는다. 몇 번 연달아 눌렀다고 알림(열림)이 앞당겨지지 않게,
+    -- 알림 판단은 주기 읽기에만 맡긴다.
+    log.warn("최신화 요청: RPi 상태 읽기 실패: " .. tostring(err))
+    return
+  end
   if not data then
     local fails = (device:get_field("fails") or 0) + 1
     device:set_field("fails", fails)
@@ -166,20 +180,32 @@ local function poll(device)
   end
   device:set_field("fails", 0)
 
-  set_alert(device, data.collect_ok ~= true)
+  set_alert(device, data.collect_ok ~= true, force)
   if type(data.collect_text) == "string" then
-    emit_changed(device, "collect", data.collect_text, nil, function(v) return capCollect.collectStatus({ value = v }) end)
+    emit_changed(device, "collect", data.collect_text, nil, function(v) return capCollect.collectStatus({ value = v }) end, nil, force)
   end
   update_last_collect(device, data.collect_ok == true,
-    type(data.last_ok_text) == "string" and data.last_ok_text or "-")
+    type(data.last_ok_text) == "string" and data.last_ok_text or "-", force)
   emit_changed(device, "temp", num(data.cpu_temp_c), TEMP_STEP_C,
-    function(v) return capTemp.cpuTemperature({ value = v, unit = "C" }) end, round)
+    function(v) return capTemp.cpuTemperature({ value = v, unit = "C" }) end, round, force)
   emit_changed(device, "clock", num(data.cpu_mhz), CLOCK_STEP_MHZ,
-    function(v) return capClock.cpuClock({ value = v, unit = "MHz" }) end)
+    function(v) return capClock.cpuClock({ value = v, unit = "MHz" }) end, nil, force)
   emit_changed(device, "cpu", num(data.cpu_pct), CPU_STEP_PCT,
-    function(v) return capCpu.cpuUsage({ value = v, unit = "%" }) end, round)
+    function(v) return capCpu.cpuUsage({ value = v, unit = "%" }) end, round, force)
   emit_changed(device, "disk", num(data.disk_used_pct), DISK_STEP_PCT,
-    function(v) return capDisk.diskUsage({ value = v, unit = "%" }) end)
+    function(v) return capDisk.diskUsage({ value = v, unit = "%" }) end, nil, force)
+end
+
+-- 새로고침·타일 버튼. RPi 를 읽기만 하고, RPi 나 다른 기기를 제어하지 않는다.
+local function force_update(device)
+  local now = os.time()
+  local last = device:get_field("force_at")
+  if last and now - last < FORCE_MIN_INTERVAL_S then
+    log.info("최신화 요청: 방금 읽어서 건너뜀")
+    return
+  end
+  device:set_field("force_at", now)
+  poll(device, true)
 end
 
 local function start_polling(device)
@@ -219,7 +245,11 @@ local function device_removed(driver, device)
 end
 
 local function handle_refresh(driver, device)
-  poll(device)
+  force_update(device)
+end
+
+local function handle_update_now(driver, device)
+  force_update(device)
 end
 
 -- 앱의 "주변 기기 검색"에서 호출된다. 이미 있으면 아무것도 하지 않는다.
@@ -255,6 +285,9 @@ local driver = Driver("stcollector-rpi-status", {
   capability_handlers = {
     [capabilities.refresh.ID] = {
       [capabilities.refresh.commands.refresh.NAME] = handle_refresh,
+    },
+    [capUpdate.ID] = {
+      [capUpdate.commands.update.NAME] = handle_update_now,
     },
   },
 })

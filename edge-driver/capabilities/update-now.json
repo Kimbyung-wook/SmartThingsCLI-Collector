@@ -1,0 +1,10 @@
+{
+  "name": "Update Now",
+  "attributes": {},
+  "commands": {
+    "update": {
+      "name": "update",
+      "arguments": []
+    }
+  }
+}

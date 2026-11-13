@@ -17,7 +17,8 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
 | 수집 상태 | Collect Status | `<namespace>.collectStatus` | `collectStatus` | `정상`, `이력 지연 20분`, `수집 멈춤 45분`, `재인증 필요`, `수집 기록 없음`, `RPi 응답 없음` |
 | 마지막 수집 시각 | Last Collect Time | `<namespace>.lastCollectTime` | `lastCollectTime` | `11-13 14:05` (KST, 월-일 시:분). 수집이 이상일 때만 갱신 |
 | 디스크 사용량 | Disk Usage | `<namespace>.diskUsage` | `diskUsage` | % (DB가 있는 파일 시스템) |
-| 새로고침 | Refresh | `refresh` (표준) | — | 아래로 당기면 바로 한 번 읽음 |
+| 지금 최신화 | Update Now | `<namespace>.updateNow` | — (명령 `update`만) | 기기 타일과 상세 화면의 버튼. 누르면 모든 값을 바로 다시 보냄 |
+| 새로고침 | Refresh | `refresh` (표준) | — | 상세 화면을 아래로 당기면 `지금 최신화`와 같은 동작 |
 
 - 커스텀 capability의 id는 `capabilities:create`가 영문 이름(name)에서 만든다. 첫 단어는 모두 소문자, 다음 단어는 첫 글자만 대문자다 (사용자 시험: `CPU Clock Test` → `cpuClockTest`). 속성 이름도 id와 같게 했다.
 - 앱의 한국어 이름은 capability 번역 파일(`capabilities/i18n/*.ko.json`)에서 온다. presentation에는 영문 문구와 `{{i18n.label}}` 참조만 두었다. 아래 [항목 이름과 한국어](#항목-이름과-한국어) 참고.
@@ -47,6 +48,27 @@ SmartThings Hub V3에 설치하는 Edge 드라이버다. 허브가 집 안 LAN�
 - 이상 판단: RPi의 `collect_ok`가 `false`이거나, 허브가 3회 연속 읽지 못함. RPi가 응답하지 않을 때는 새 시각이 없어 마지막으로 보낸 시각을 한 번 다시 보낸다.
 - 마지막으로 보낸 값은 `device:set_field(..., { persist = true })`로 저장해 드라이버·허브 재시작 뒤에도 같은 값을 다시 올리지 않는다. 이 판으로 처음 바꿀 때는 저장된 값이 없어 항목마다 한 번씩 보낸다.
 - 처음 기기를 만들었을 때는 마지막 수집 시각도 한 번 보낸다 (빈 칸으로 두지 않게).
+
+### 지금 최신화 (타일 버튼, 새로고침)
+
+- 기기 타일의 버튼(`updateNow`)을 누르거나 상세 화면을 아래로 당기면(`refresh`) `/hub/status`를 바로 읽고, 위 표의 기준과 상관없이 모든 항목(열림/닫힘, 수집 상태, 마지막 수집 시각, CPU 온도·클럭·사용률, 디스크)을 보낸다.
+- 보낸 값은 `sent_*`에 저장돼 다음 주기 읽기의 비교 기준이 된다. 온도와 사용률은 이때도 정수로 반올림한다.
+- 5초(`FORCE_MIN_INTERVAL_S`) 안에 다시 누르면 RPi를 다시 읽지 않는다.
+- 이때 읽기에 실패하면 로그만 남기고 실패 횟수는 늘리지 않는다. 몇 번 연달아 눌렀다고 열림(이상) 알림이 앞당겨지지 않게, 알림은 주기 읽기(3회 연속 실패)로만 판단한다.
+- 값이 앱에 이미 있는 값과 같으면 앱 화면은 그대로다. 같은 값의 이벤트를 앱 기록에 남기는지는 확인 못 했다 (`state_change` 옵션은 쓰지 않음).
+- 이 버튼은 우리 가상 기기의 명령일 뿐이다. RPi에는 `GET /hub/status` 읽기만 하고, RPi나 다른 SmartThings 기기를 제어하지 않는다.
+
+**타일 버튼 방식을 고른 근거**
+
+- 타일 버튼은 capability presentation의 `dashboard.actions`에 `displayType: "pushButton"`을 두어 만든다. 대시보드 동작으로 쓸 수 있는 표시 형식에 `pushButton`이 있다 ([Capability Presentations](https://developer.smartthings.com/docs/devices/capabilities/capability-presentations), [Display Types](https://developer.smartthings.com/docs/devices/capabilities/display-types)).
+- 표준 `momentary`를 쓰지 않은 이유: 문서의 capability 목록 페이지가 브라우저에서만 그려져 `momentary`의 presentation에 타일 버튼이 있는지 확인하지 못했다. 커스텀 capability는 presentation을 직접 쓰므로 버튼 모양과 한국어 이름(`지금 최신화`)을 정할 수 있다.
+- 표준 `refresh`는 그대로 둔다 (상세 화면 당겨서 새로고침).
+
+**타일 표시에 미치는 영향 (추정)**
+
+- 프로파일 순서: `contactSensor` → `updateNow` → 나머지. `updateNow`는 표시할 상태가 없는 명령 전용이라, 타일 상태는 지금처럼 열림/닫힘이 남는 것을 노렸다.
+- 기기 설정(vid)이 없을 때 앱이 타일의 상태와 버튼을 어느 capability에서 가져오는지는 문서에 없다. 문서에는 "프로파일 순서대로 표시가 자동 생성된다"는 말만 있다 ([Device Configurations](https://developer.smartthings.com/docs/devices/configurations-and-presentations/device-configurations)).
+- 그래서 설치 뒤 확인할 것: ① 타일에 버튼이 보이는지 ② 타일 상태가 열림/닫힘 그대로인지 ③ 상세 화면에 `지금 최신화` 버튼이 보이는지. 어긋나면 아래 [타일 버튼이 안 보일 때](#타일-버튼이-안-보일-때)로 기기 설정을 만든다.
 
 ## 수집 정상 판정
 
@@ -90,7 +112,7 @@ PowerShell에서 저장소 루트(`iot`)로 이동한 뒤 진행한다. `<namesp
 $NS = "<namespace>"
 ```
 
-### 1. 커스텀 capability 6개 만들기
+### 1. 커스텀 capability 7개 만들기
 
 ```powershell
 smartthings capabilities:create -i edge-driver/capabilities/cpu-temperature.json
@@ -99,12 +121,13 @@ smartthings capabilities:create -i edge-driver/capabilities/cpu-usage.json
 smartthings capabilities:create -i edge-driver/capabilities/collect-status.json
 smartthings capabilities:create -i edge-driver/capabilities/last-collect-time.json
 smartthings capabilities:create -i edge-driver/capabilities/disk-usage.json
+smartthings capabilities:create -i edge-driver/capabilities/update-now.json
 ```
 
-- 결과의 id가 `<namespace>.cpuTemperature`, `cpuClock`, `cpuUsage`, `collectStatus`, `lastCollectTime`, `diskUsage`인지 확인한다. 다르면 프로파일·Lua·presentation·번역 파일의 id를 결과에 맞춘다.
+- 결과의 id가 `<namespace>.cpuTemperature`, `cpuClock`, `cpuUsage`, `collectStatus`, `lastCollectTime`, `diskUsage`, `updateNow`인지 확인한다. 다르면 프로파일·Lua·presentation·번역 파일의 id를 결과에 맞춘다.
 - 앞서 시험으로 만든 `cpuClockTest`는 쓰지 않는다. 이번 `cpuClock`과 이름이 다르므로 겹치지 않는다.
 
-### 2. capability presentation 6개 만들기
+### 2. capability presentation 7개 만들기
 
 ```powershell
 smartthings capabilities:presentation:create "$NS.cpuTemperature" --capability-version 1 -i edge-driver/capabilities/cpu-temperature.presentation.json
@@ -113,6 +136,7 @@ smartthings capabilities:presentation:create "$NS.cpuUsage" --capability-version
 smartthings capabilities:presentation:create "$NS.collectStatus" --capability-version 1 -i edge-driver/capabilities/collect-status.presentation.json
 smartthings capabilities:presentation:create "$NS.lastCollectTime" --capability-version 1 -i edge-driver/capabilities/last-collect-time.presentation.json
 smartthings capabilities:presentation:create "$NS.diskUsage" --capability-version 1 -i edge-driver/capabilities/disk-usage.presentation.json
+smartthings capabilities:presentation:create "$NS.updateNow" --capability-version 1 -i edge-driver/capabilities/update-now.presentation.json
 ```
 
 ### 2-1. 번역 올리기 (영어, 한국어)
@@ -121,7 +145,8 @@ capability마다 영어와 한국어 번역을 하나씩 올린다. 휴대폰 �
 
 ```powershell
 $files = @{ cpuTemperature = "cpu-temperature"; cpuClock = "cpu-clock"; cpuUsage = "cpu-usage";
-            collectStatus = "collect-status"; lastCollectTime = "last-collect-time"; diskUsage = "disk-usage" }
+            collectStatus = "collect-status"; lastCollectTime = "last-collect-time"; diskUsage = "disk-usage";
+            updateNow = "update-now" }
 foreach ($id in $files.Keys) {
   foreach ($tag in "en", "ko") {
     smartthings capabilities:translations:upsert "$NS.$id" --capability-version 1 -i "edge-driver/capabilities/i18n/$($files[$id]).$tag.json"
@@ -170,6 +195,59 @@ smartthings edge:drivers:install <driver-id> --hub <hub-id> --channel <channel-i
 
 - 반영 확인: `smartthings edge:channels:drivers <channel-id>`에 드라이버가, `smartthings edge:channels:enrollments <hub-id>`에 채널이, `smartthings edge:drivers:installed --hub <hub-id>`에 드라이버가 보여야 한다.
 - 드라이버를 고친 뒤에는 4단계와 `edge:channels:assign`만 다시 하면 허브가 새 버전을 받는다 (반영까지 몇 분에서 몇 시간 걸릴 수 있음, 미확인). 기다리지 않으려면 `edge:drivers:install`을 다시 실행한다.
+
+### 이미 설치한 뒤 `지금 최신화` 버튼만 더할 때
+
+capability 6개와 채널·허브 등록이 이미 끝났다면 아래만 실행한다. `<driver-id>`, `<channel-id>`, `<hub-id>`는 5단계와 같다.
+
+```powershell
+smartthings capabilities:create -i edge-driver/capabilities/update-now.json
+smartthings capabilities:presentation:create "$NS.updateNow" --capability-version 1 -i edge-driver/capabilities/update-now.presentation.json
+smartthings capabilities:translations:upsert "$NS.updateNow" --capability-version 1 -i edge-driver/capabilities/i18n/update-now.en.json
+smartthings capabilities:translations:upsert "$NS.updateNow" --capability-version 1 -i edge-driver/capabilities/i18n/update-now.ko.json
+smartthings edge:drivers:package edge-driver
+smartthings edge:channels:assign <driver-id> --channel <channel-id>
+smartthings edge:drivers:install <driver-id> --hub <hub-id> --channel <channel-id>
+```
+
+- 첫 줄 결과의 id가 `<namespace>.updateNow`인지 확인한다.
+- 프로파일 이름(`stcollector-rpi.v1`)은 그대로라 기기를 지우고 다시 만들 필요는 없을 것으로 본다 (미확인). 새 버전 설치 뒤에도 앱에 버튼이 안 보이면 앱을 다시 열고, 그래도 없으면 기기를 지우고 6단계로 다시 만든다.
+- 새 capability를 만든 직후에는 presentation 반영에 시간이 걸릴 수 있다는 보고가 있다 (미확인).
+
+### 타일 버튼이 안 보일 때
+
+기기 설정(device configuration)을 만들어 타일의 상태와 버튼을 직접 정한다. 문서의 밝기 조절기 예처럼 `dashboard.states`와 `dashboard.actions`에 서로 다른 capability를 넣을 수 있다 ([Device Configurations](https://developer.smartthings.com/docs/devices/configurations-and-presentations/device-configurations)).
+
+1. 지금 프로파일에서 기기 설정 틀을 만든다. 프로파일 id는 `smartthings deviceprofiles`에서 찾는다.
+
+   ```powershell
+   smartthings presentation:device-config:generate <profile-id> -o edge-driver/device-config.json
+   ```
+
+2. 만든 파일의 `dashboard`를 아래처럼 고친다 (상태 = 열림/닫힘, 버튼 = 지금 최신화). `detailView`, `automation`은 생성된 그대로 둔다.
+
+   ```json
+   "dashboard": {
+     "states": [{ "component": "main", "capability": "contactSensor", "version": 1 }],
+     "actions": [{ "component": "main", "capability": "<namespace>.updateNow", "version": 1 }]
+   }
+   ```
+
+3. 기기 설정을 올리고, 결과의 `vid`를 프로파일에 넣는다. Edge 드라이버는 `mnmn` 없이 `vid`만 넣으면 된다고 문서에 있다 ([Device Presentations](https://developer.smartthings.com/docs/devices/configurations-and-presentations/device-presentations)).
+
+   ```powershell
+   smartthings presentation:device-config:create -i edge-driver/device-config.json
+   ```
+
+   ```yaml
+   # profiles/stcollector-rpi.yml 맨 아래
+   metadata:
+     vid: <vid>
+   ```
+
+4. 4~5단계(package, assign, install)를 다시 한다.
+
+- `presentation:device-config:generate`, `create`의 정확한 인자는 확인 못 했다. 오류가 나면 `--help`로 확인한다.
 
 ### 6. 앱에서 기기 추가와 RPi 주소 입력
 
@@ -226,7 +304,7 @@ sudo systemctl restart stcollector-web
 | `config.yml` | 드라이버 이름, packageKey, 권한(`lan`, `discovery`) |
 | `profiles/stcollector-rpi.yml` | 기기 프로파일과 설정 항목(RPi 주소, 읽기 주기) |
 | `src/init.lua` | 기기 생성, 주기 읽기, 이벤트 보내기 |
-| `capabilities/*.json` | 커스텀 capability 정의 |
+| `capabilities/*.json` | 커스텀 capability 정의 (`update-now.json`은 타일 버튼용 명령만 있음) |
 | `capabilities/*.presentation.json` | 앱 표시 방식 (대시보드, 상세 화면, 루틴 조건) |
 | `capabilities/i18n/*.{en,ko}.json` | 항목 이름 번역 (영어, 한국어) |
 
@@ -255,3 +333,5 @@ sudo systemctl restart stcollector-web
 - 설정 이름 길이 제한, `edge:channels:create`의 옵션: 확인 못 했다. 위 명령은 대화형으로 쓰는 것을 전제로 했다.
 - `try_create_device`를 discovery 안에서 바로 부르는 방식은 문서의 함수 정의와 예제에 맞지만, LAN 검색 없이 쓰는 공식 예제는 찾지 못했다.
 - Lua 코드는 허브나 PC에서 실행해 보지 않았다. 첫 설치 때 logcat으로 확인한다.
+- `updateNow`: 속성 없이 명령만 있는 커스텀 capability(`attributes: {}`)가 `capabilities:create`에서 받아들여지는지, `pushButton`의 `command`에 인자 없는 명령 이름만 써도 되는지(문서 예는 `argument: "push"`를 함께 씀), 상세 화면(`detailView`)에서 `pushButton`을 쓸 수 있는지, 번역 파일의 `commands` 항목 모양은 확인 못 했다. 생성 명령이 거부하면 오류 문구에 맞춰 고친다.
+- 기기 설정 없이 타일의 상태·버튼이 어느 capability에서 오는지: 문서에 없다. 위 [지금 최신화](#지금-최신화-타일-버튼-새로고침)의 확인 항목 참고.
