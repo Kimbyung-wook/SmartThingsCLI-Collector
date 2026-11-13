@@ -4,4 +4,4 @@
 데이터 경로: SmartThings API (HTTPS, 나가는 연결만) -> 로컬 SQLite.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

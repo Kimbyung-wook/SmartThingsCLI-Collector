@@ -11,6 +11,7 @@
 | 보드나 microSD 고장 | [MIGRATION](MIGRATION.md) |
 | 코드 동작 방식, DB 테이블, 서비스 관계, 보안 경계 | [ARCHITECTURE](ARCHITECTURE.md) |
 | 설계 이유, 앞으로의 단계 | [PLAN](../PLAN.md) |
+| 버전별 변경 내역 | [CHANGELOG](../CHANGELOG.md) |
 | 전압 부족 시험 결과, 전원 운영 설정 되돌리기 | [POWER_TEST](POWER_TEST.md) |
 | SmartThings 앱에서 RPi 상태 보기, 허브 드라이버 설치 | [edge-driver/README](../edge-driver/README.md) |
 
@@ -26,6 +27,7 @@
 ## 현재 상태
 
 - 배포: 2026-11-10 01:15 KST 완료
+- 버전: 0.2.0 (2026-11-13). 변경 내역은 [CHANGELOG](../CHANGELOG.md)
 - 활성화, 부팅 시 자동 시작: `stcollector`, `stcollector-web`, `stcollector-sysmon`, `stcollector-rollup.timer`
 - 수집 방식: `backend = "cli"`. OAuth는 유료 Developer Plan이 필요해 선택지로만 유지
 - CLI 실행 파일: `/opt/stcollector-cli/smartthings`
