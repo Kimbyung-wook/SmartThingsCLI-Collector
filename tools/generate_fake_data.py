@@ -12,6 +12,7 @@ DB 옆 sysmon/ 폴더에 시스템 모니터의 가짜 기록(sysmon.db, current
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import random
 import sys
@@ -227,8 +228,12 @@ def generate(db: Database, days: int, seed: int, now_ms: int) -> int:
     return total
 
 
-def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14) -> int:
-    """RPi 상태의 가짜 기록. 프로세스 이름은 일반적인 값만 쓴다."""
+def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14, minute_days: int = 14) -> int:
+    """RPi 상태의 가짜 기록. 프로세스 이름은 일반적인 값만 쓴다.
+
+    days 동안의 1분 요약을 만들어 1시간 요약(hours)으로 묶은 뒤, 실제 모니터처럼
+    minute_days 보다 오래된 1분 요약은 지운다. 코어는 화면 확인용으로 4개를 둔다.
+    """
     rng = random.Random(seed + 1)
     path = sysmon_db_path(db_path)
     store = SysmonStore(path)
@@ -237,7 +242,7 @@ def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14) -> in
     # (시작까지 남은 분, 지속 분): 전압 부족 구간
     undervolt = [(95, 3), (410, 1), (760, 2), (2600, 4), (9000, 2)]
     uv_minutes = {minute_now - (ago - i) * MIN for ago, length in undervolt for i in range(length)}
-    rows = []
+    rows, total = [], 0
     for ts in range(start, minute_now, MIN):
         hod = hour_of_day(ts)
         collect = ts % (5 * MIN) < MIN
@@ -245,13 +250,23 @@ def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14) -> in
         temp = 47 + 4 * math.sin(2 * math.pi * (hod - 15) / 24) + (5 if collect else 0) + (8 if rollup else 0) + rng.gauss(0, 0.5)
         load = max(0.02, 0.15 + (0.7 if collect else 0) + (1.1 if rollup else 0) + rng.gauss(0, 0.05))
         uv = 25 if ts in uv_minutes else 0
+        cpu = min(100.0, max(1.0, 6 + (55 if collect else 0) + (70 if rollup else 0) + rng.gauss(0, 2)))
+        cores = {str(c): round(min(100.0, max(0.0, cpu * (1.6 if c == 0 else 0.8 - c * 0.15) + rng.gauss(0, 2))), 1) for c in range(4)}
         rows.append({
             "ts_ms": ts, "temp_avg": round(temp, 1), "temp_min": round(temp - 0.6, 1), "temp_max": round(temp + 1.1, 1),
             "freq_avg": 900.0 if collect or rollup else 700.0 + rng.randint(0, 50), "load_avg": round(load, 2),
             "mem_avail_mb": 620 - (130 if collect else 0), "disk_free_gb": 24.8,
             "undervolt_s": uv, "overheat_s": 0, "throttle_s": 0, "samples": 12,
+            "cpu_avg": round(cpu, 1), "cpu_cores": json.dumps(cores, separators=(",", ":")),
         })
+        if len(rows) >= 20_000:
+            store.add_minutes(rows)
+            total += len(rows)
+            rows = []
     store.add_minutes(rows)
+    total += len(rows)
+    store.rollup_hours(minute_now)
+    store.apply_retention(now_ms, minute_days, 365)
     procs = [
         {"name": "smartthings", "cpu_s": 31.4, "pct": 52.3},
         {"name": "python3 (수집)", "cpu_s": 4.2, "pct": 7.0},
@@ -277,7 +292,7 @@ def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14) -> in
         "active": [], "top": procs[:3], "disk_free_gb": 24.8, "disk_total_gb": 29.0,
         "capabilities": {"undervoltage": True, "throttle_bits": False}, "pending": [],
     })
-    return len(rows)
+    return total
 
 
 def main() -> int:
@@ -295,7 +310,7 @@ def main() -> int:
     now_ms = int(time.time() * 1000)
     n = generate(db, args.days, args.seed, now_ms)
     db.close()
-    generate_sysmon(path, args.seed, now_ms)
+    generate_sysmon(path, args.seed, now_ms, days=args.days)
     print(f"측정값 {n:,}건 생성, {time.time() - begin:.1f}초, 파일 {path.stat().st_size / 1e6:.1f} MB")
     return 0
 

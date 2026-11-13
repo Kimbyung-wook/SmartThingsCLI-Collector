@@ -44,6 +44,9 @@
     if (grain === 'month') return (kst(t).getUTCMonth() + 1) + '월';
     return md(t);
   }
+  /* 끄는 차트의 시간 눈금: 자정은 날짜, 그 밖은 시각 */
+  function hourTick(t) { return midnight(t) ? md(t) : hh(t) + '시'; }
+  function minuteTick(t) { return midnight(t) ? md(t) : hm(t); }
   function bucketTip(t, grain) {
     if (grain === 'hour') return md(t) + ' ' + hh(t) + '시';
     if (grain === 'week') return md(t) + ' 시작 주';
@@ -107,11 +110,16 @@
         return td;
       }))))));
   }
-  /* 표는 열 때 만든다 (DOM을 작게 유지) */
-  function tableView(build) {
+  /* 표는 열 때 만든다 (DOM을 작게 유지). fresh 면 열 때마다 새로 만든다 (끄는 차트의 지금 보이는 구간) */
+  function tableView(build, fresh) {
     const d = h('details', null, h('summary', { text: '표로 보기' }));
-    let done = false;
-    d.addEventListener('toggle', () => { if (d.open && !done) { d.append(build()); done = true; } });
+    let done = null;
+    d.addEventListener('toggle', () => {
+      if (!d.open || (done && !fresh)) return;
+      if (done) done.remove();
+      done = build();
+      d.append(done);
+    });
     return d;
   }
   function chartHost() { return h('div', { class: 'chart' }); }
@@ -126,6 +134,47 @@
   /* DOM에 붙인 뒤에 차트를 그린다 (폭 측정) */
   const afterMount = [];
   function later(fn) { afterMount.push(fn); }
+
+  // ---- 가로로 끄는 차트 (요약·추세·상태) ------------------------------------------------
+  const DAY = 24 * H;
+  const PAN_VIEW = { '24h': DAY, month: 30 * DAY, year: 52 * 7 * DAY };  // 한 화면 길이
+  const STEP = { hour: H, day: DAY, week: 7 * DAY };
+  // 시각 눈금 후보. 라벨 사이가 58px 이상인 가장 촘촘한 것을 고른다 (KST 정각 기준)
+  const TIME_TICKS = { tickMs: [1, 2, 5, 10, 15, 30].map(m => m * 6e4).concat([1, 2, 3, 6, 12, 24].map(x => x * H)), tickOffset: KST };
+  const ymd = t => { const d = kst(t); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); };
+  const mdhm = t => pad(kst(t).getUTCMonth() + 1) + '-' + pad(kst(t).getUTCDate()) + ' ' + hm(t);
+  const midnight = t => (t + KST) % DAY === 0;
+  /* 보고 있는 구간 문구. 시간 단위는 "11-10 14:00 ~ 11-11 14:00", 날짜 단위는 끝 날짜를 포함해 쓴다 */
+  const rangeText = fine => (a, b) => (fine ? mdhm(a) + ' ~ ' + mdhm(b) : ymd(a) + ' ~ ' + ymd(b - 1));
+  const withEnd = (params, end) => (end == null ? params : { ...params, end });
+  const visibleIndex = (buckets, xend, g) => {
+    const [a, b] = g.visible();
+    return buckets.map((_, i) => i).filter(i => (i + 1 < buckets.length ? buckets[i + 1] : xend) > a && buckets[i] < b);
+  };
+  /* /api/series 응답 하나를 묶음으로 */
+  function seriesChunk(d) {
+    const step = STEP[d.grain];
+    return { start: d.buckets[0], end: d.buckets[d.buckets.length - 1] + step, data: d, hasOlder: d.has_older, oldest: d.oldest_ms };
+  }
+  /* 시간순 /api/series 응답들을 하나로. 계열은 id 로 맞추고 없는 묶음은 null 로 채운다 */
+  function mergeSeries(list) {
+    const last = list[list.length - 1], ids = [], info = {};
+    list.slice().reverse().forEach(d => d.series.forEach(x => { if (!info[x.id]) { info[x.id] = x; ids.push(x.id); } }));
+    const series = ids.map(id => {
+      const base = info[id], out = { id, name: base.name, color: base.color };
+      ['avg', 'min', 'max', 'coverage'].forEach(key => {
+        if (!list.some(d => d.series.some(x => x.id === id && x[key]))) { out[key] = null; return; }
+        out[key] = [];
+        list.forEach(d => {
+          const src = (d.series.find(x => x.id === id) || {})[key];
+          for (let i = 0; i < d.buckets.length; i++) out[key].push(src ? src[i] : null);
+        });
+      });
+      return out;
+    });
+    const buckets = [].concat(...list.map(d => d.buckets));
+    return { ...last, buckets, xend: last.buckets[last.buckets.length - 1] + STEP[last.grain], series };
+  }
 
   // ---- 요약 -----------------------------------------------------------------------
   async function vSummary() {
@@ -151,24 +200,39 @@
           h('span', { text: '습도 ' + now(r.humidity, 0) + '%' }),
           h('span', { class: 'room-lux', text: now(r.illuminance, 0) + ' lx' })));
     };
+    // 요약 차트는 함께 움직인다. 묶음 하나 = 보이는 항목별 /api/series 응답 배열
+    const summaryChunk = list => ({ ...seriesChunk(list[0]), data: list, hasOlder: list.some(x => x.has_older),
+      oldest: list.reduce((m, x) => (x.oldest_ms == null ? m : m == null ? x.oldest_ms : Math.min(m, x.oldest_ms)), null) });
+    const g = summaryMetrics.length ? Charts.pan({
+      view: PAN_VIEW['24h'], first: summaryChunk(charts), range: rangeText(true),
+      load: end => Promise.all(summaryMetrics.map(([metric]) => api('/api/series', withEnd({ metric, period: '24h' }, end)))).then(summaryChunk),
+      merge: list => summaryMetrics.map((_, k) => mergeSeries(list.map(x => x[k]))),
+    }) : null;
+    if (g) later(() => g.start());
+
     const measured = d.rooms.filter(r => r.temperature || r.humidity || r.illuminance || r.occupancy != null);
     const strip = measured.length ? h('div', { class: 'rooms' }, measured.map(roomCard)) : null;
 
     // 첫 차트를 크게, 이어지는 차트는 작게 그린다.
     const plot = ([metric, label], big) => {
-      const c = charts[summaryMetrics.findIndex(m => m[0] === metric)], rs = c.series.filter(x => x.avg.some(v => v != null));
+      const k = summaryMetrics.findIndex(m => m[0] === metric);
+      const c = charts[k], rs = c.series.filter(x => x.avg.some(v => v != null));
       const log = metric === 'illuminance';
       const band = rs.some(x => x.min != null);
-      const sub = ['최근 24시간', '선은 평균', band ? '띠는 최소~최대' : null, log ? '로그 눈금' : null];
+      const sub = ['24시간 보기', '선은 평균', band ? '띠는 최소~최대' : null, log ? '로그 눈금' : null];
       const sec = section(label, sub.filter(Boolean).join(' · '));
+      if (big) sec.append(g.bar);  // 요약 차트 모두에 적용
       if (!rs.length) { sec.append(empty('아직 집계된 값 없음', '매시 2분 갱신')); return sec; }
-      const host = chartHost();
-      later(() => Charts.line(host, {
-        n: c.buckets.length, x: i => bucketX(c.buckets[i], c.grain), tip: i => bucketTip(c.buckets[i], c.grain),
-        series: rs, band, log, unit: c.unit, digits: c.digits, directLabels: rs.length > 1,
-        height: big ? (W => (W < 520 ? 220 : 300)) : (W => (W < 520 ? 170 : 200)),
-        aria: `최근 24시간 방별 ${label} 차트. 선은 평균, 띠는 최소~최대. 추세 화면에서 표로 볼 수 있습니다.`,
-      }));
+      const host = chartHost(), ids = new Set(rs.map(x => x.id));
+      later(() => g.add(host, m => {
+        const mc = m[k];
+        return {
+          xs: mc.buckets, xend: mc.xend, x: i => hourTick(mc.buckets[i]), tip: i => bucketTip(mc.buckets[i], mc.grain),
+          series: mc.series.filter(x => ids.has(x.id)), band, log, unit: mc.unit, digits: mc.digits, ...TIME_TICKS,
+          height: big ? (W => (W < 520 ? 220 : 300)) : (W => (W < 520 ? 170 : 200)),
+          aria: `방별 ${label} 차트, 24시간 보기. 선은 평균, 띠는 최소~최대. 옆으로 끌면 이전 기간. 추세 화면에서 표로 볼 수 있습니다.`,
+        };
+      }, metric));
       sec.append(host);
       return sec;
     };
@@ -201,7 +265,8 @@
   // ---- 추세 -----------------------------------------------------------------------
   const unitDigits = d => d.digits;
   async function vTrend() {
-    const d = await api('/api/series', { metric: S.metric, period: S.period });
+    const metric = S.metric, period = S.period;
+    const d = await api('/api/series', { metric, period });
     const available = d.series.filter(x => x.avg.some(v => v != null));
     const names = available.map(x => x.name);
     if (S.room !== 'all' && !names.includes(S.room)) S.room = 'all';
@@ -212,7 +277,7 @@
 
     const cmp = S.room === 'all' && available.length > 1;
     const rs = cmp ? available : (S.room === 'all' ? available : available.filter(x => x.name === S.room));
-    const digits = unitDigits(d), n = d.buckets.length;
+    const digits = unitDigits(d);
     const log = S.metric === 'illuminance';
     // 평균은 선, 구간별 최소~최대는 띠 (이슬점은 계산값이라 띠 없음)
     const band = rs.some(r => r.min != null);
@@ -222,18 +287,26 @@
       log ? h('span', { text: '세로축은 로그 눈금' }) : null,
       h('span', { text: '흐린 구간은 수집률 50% 미만' }));
     const host = chartHost();
-    const metricLabel = METRICS.find(m => m[0] === S.metric)[1];
-    later(() => Charts.line(host, {
-      n, x: i => bucketX(d.buckets[i], d.grain), tip: i => bucketTip(d.buckets[i], d.grain),
-      series: rs, band, log, unit: d.unit, digits, directLabels: cmp,
-      aria: `${metricLabel} 추세 차트. 선은 평균, 띠는 최소~최대. 값은 아래 표로도 볼 수 있습니다.`,
-    }));
+    const metricLabel = METRICS.find(m => m[0] === metric)[1];
+    const g = Charts.pan({
+      view: PAN_VIEW[period], first: seriesChunk(d), range: rangeText(d.grain === 'hour'),
+      load: end => api('/api/series', withEnd({ metric, period }, end)).then(seriesChunk), merge: mergeSeries,
+    });
+    const ids = new Set(rs.map(r => r.id)), pick = m => m.series.filter(x => ids.has(x.id));
+    later(() => g.add(host, m => ({
+      xs: m.buckets, xend: m.xend, tip: i => bucketTip(m.buckets[i], m.grain), series: pick(m), band, log, unit: m.unit, digits,
+      ...(m.grain === 'hour' ? { x: i => hourTick(m.buckets[i]), ...TIME_TICKS } : { x: i => bucketX(m.buckets[i], m.grain) }),
+      aria: `${metricLabel} 추세 차트. 선은 평균, 띠는 최소~최대. 옆으로 끌면 이전 기간. 값은 아래 표로도 볼 수 있습니다.`,
+    }), 'trend'));
+    later(() => g.start());
     const cell = (r, i) => fmt(r.avg[i], digits) + (band && r.min && r.min[i] != null ? ` (${fmt(r.min[i], digits)}~${fmt(r.max[i], digits)})` : '');
-    const tv = tableView(() => table(
-      ['구간', ...rs.map(r => (cmp ? r.name + ' ' : '') + (band ? '평균 (최소~최대)' : '평균'))],
-      d.buckets.map((b, i) => [bucketTip(b, d.grain), ...rs.map(r => cell(r, i))]),
-      i => i > 0));
-    return [controls, legend, host, tv,
+    const tv = tableView(() => {  // 지금 보이는 구간만
+      const m = g.merged, shown = pick(m);
+      return table(['구간', ...shown.map(r => (cmp ? r.name + ' ' : '') + (band ? '평균 (최소~최대)' : '평균'))],
+        visibleIndex(m.buckets, m.xend, g).map(i => [bucketTip(m.buckets[i], m.grain), ...shown.map(r => cell(r, i))]),
+        i => i > 0);
+    }, true);
+    return [controls, legend, g.bar, host, tv,
       S.period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
   }
 
@@ -427,6 +500,21 @@
         h('span', { class: 'when', text: state })),
       body);
   }
+  /* /api/system 응답 하나를 묶음으로. 첫 기록 시각은 구간 경계로 내린다 */
+  function sysChunk(s) {
+    const q = s.series, b = s.bucket_ms;
+    return { start: q.buckets[0], end: s.end, data: { ...q, xend: s.end, bucket_ms: b }, hasOlder: s.has_older,
+      oldest: s.oldest_ms == null ? null : s.oldest_ms - s.oldest_ms % b };
+  }
+  const SYS_KEYS = ['buckets', 'temp_avg', 'temp_min', 'temp_max', 'freq', 'load', 'cpu', 'undervolt_s', 'overheat_s', 'coverage'];
+  function mergeSystem(list) {
+    const out = { xend: list[list.length - 1].xend, bucket_ms: list[0].bucket_ms, cpu_cores: {} };
+    SYS_KEYS.forEach(k => { out[k] = [].concat(...list.map(q => q[k])); });
+    const cores = new Set();
+    list.forEach(q => Object.keys(q.cpu_cores || {}).forEach(c => cores.add(c)));
+    cores.forEach(c => { out.cpu_cores[c] = [].concat(...list.map(q => (q.cpu_cores || {})[c] || q.buckets.map(() => null))); });
+    return out;
+  }
   // load 는 저장된 값 그대로 받고, 화면에서만 코어 수로 나눈 % 로 보여 준다 (100% 를 넘을 수 있다)
   let cores = 1;
   const loadToPct = v => (v == null ? null : v * 100 / cores);
@@ -463,31 +551,61 @@
       head.append(h('p', { class: 'sub', text: '현재값 파일 없음 · 모니터 중단 또는 재부팅 직후' }));
     }
 
-    const q = sys.series, n = q.buckets.length;
-    const oneHour = S.sysPeriod === '1h', periodLabel = oneHour ? '최근 1시간' : '최근 24시간';
-    const charts = section(periodLabel, (oneHour ? '1분' : '5분') + ' 평균 · 온도의 띠는 최대~최소');
+    const q = sys.series, period = S.sysPeriod;
+    const oneHour = period === '1h', periodLabel = oneHour ? '1시간 보기' : '24시간 보기';
+    const charts = section(periodLabel, (oneHour ? '1분 평균' : '5분 평균, 14일보다 전은 1시간 평균') + ' · 온도의 띠는 최대~최소');
     charts.append(h('div', { class: 'controls' }, seg('sysPeriod', SYS_PERIODS, '기간')));
     out.push(charts);
     if (q.temp_avg.some(v => v != null)) {
-      const uv = q.undervolt_s;
-      const key = uv.some(v => v > 0) ? h('div', { class: 'legend' }, legendBox('var(--shade)', '전압 부족 구간')) : null;
-      const base = { n, x: i => hm(q.buckets[i]), tip: i => stamp(q.buckets[i]), shade: i => uv[i] > 0,
-        extra: i => (uv[i] > 0 ? [{ key: '전압 부족', value: uv[i] + '초' }] : []), height: W => (W < 520 ? 150 : 180) };
-      const chart = (title, label, avg, opts) => {
+      const g = Charts.pan({
+        view: sys.view_ms, first: sysChunk(sys), range: rangeText(true),
+        load: end => api('/api/system', withEnd({ period }, end)).then(sysChunk), merge: mergeSystem,
+      });
+      later(() => g.start());
+      charts.append(g.bar);
+      const key = q.undervolt_s.some(v => v > 0) ? h('div', { class: 'legend' }, legendBox('var(--shade)', '전압 부족 구간')) : null;
+      const wide = (m, i) => (i + 1 < m.buckets.length ? m.buckets[i + 1] : m.xend) - m.buckets[i] > m.bucket_ms;
+      const base = m => ({
+        xs: m.buckets, xend: m.xend, x: i => minuteTick(m.buckets[i]), ...TIME_TICKS,
+        tip: i => stamp(m.buckets[i]) + (wide(m, i) ? ' · 1시간 평균' : ''), shade: i => m.undervolt_s[i] > 0,
+        extra: i => (m.undervolt_s[i] > 0 ? [{ key: '전압 부족', value: m.undervolt_s[i] + '초' }] : []), height: W => (W < 520 ? 150 : 180),
+      });
+      const chart = (title, label, pick, opts) => {
         const sec = section(title, opts.sub), host = chartHost();
-        const se = { name: label, color: 'ink', avg, coverage: q.coverage, min: opts.min || null, max: opts.max || null };
-        later(() => Charts.line(host, { ...base, series: [se], band: !!opts.min, unit: opts.unit, digits: opts.digits, domain: opts.domain, aria: `${periodLabel} ${title} 차트. 값은 아래 표로도 볼 수 있습니다.` }));
+        if (opts.legend) sec.append(opts.legend);
+        later(() => g.add(host, m => {
+          const series = opts.series ? opts.series(m)
+            : [{ name: label, color: 'ink', avg: pick(m), coverage: m.coverage, min: opts.min ? m.temp_min : null, max: opts.min ? m.temp_max : null }];
+          return { ...base(m), series, band: !!opts.min, unit: opts.unit, digits: opts.digits, domain: opts.domain && opts.domain(m),
+            aria: `${title} 차트, ${periodLabel}. 옆으로 끌면 이전 기간. 값은 아래 표로도 볼 수 있습니다.` };
+        }, title));
         sec.append(host);
         return sec;
       };
-      const load = q.load.map(loadToPct), loadTop = Math.max(100, ...load.filter(v => v != null));
+      const loadOf = m => m.load.map(loadToPct);
       if (key) charts.append(key);
       out.push(
-        chart('CPU 온도', '온도', q.temp_avg, { min: q.temp_min, max: q.temp_max, unit: '°C', digits: 1 }),
-        chart('CPU 클럭', 'CPU 클럭', q.freq, { unit: 'MHz', digits: 0 }),
-        chart('CPU Load', 'CPU Load', load, { unit: '%', digits: 0, domain: [0, loadTop], sub: '100% 초과는 CPU를 기다리는 작업이 있다는 뜻' }),
-        tableView(() => table(['시각', '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', '전압 부족 초'],
-          q.buckets.map((b, i) => [stamp(b), fmt(q.temp_avg[i], 1), fmt(q.freq[i]), fmt(load[i]), uv[i]]).filter((_, i) => q.coverage[i] != null), i => i > 0)));
+        chart('CPU 온도', '온도', m => m.temp_avg, { min: true, unit: '°C', digits: 1 }),
+        chart('CPU 클럭', 'CPU 클럭', m => m.freq, { unit: 'MHz', digits: 0 }),
+        chart('CPU Load', 'CPU Load', loadOf, { unit: '%', digits: 0, sub: '100% 초과는 CPU를 기다리는 작업이 있다는 뜻',
+          domain: m => [0, Math.max(100, ...loadOf(m).filter(v => v != null))] }));
+      // 코어별 사용률은 한 차트에 겹쳐 그린다. 꺼진 코어(maxcpus)는 기록이 없어 빠진다
+      const coreIds = Object.keys(q.cpu_cores || {});
+      if (coreIds.length) {
+        const coreSeries = m => Object.keys(m.cpu_cores).sort((a, b) => a - b)
+          .map((c, j) => ({ name: '코어 ' + c, color: j, avg: m.cpu_cores[c], coverage: null, min: null, max: null }));
+        out.push(chart('코어별 CPU 사용률', null, null, {
+          unit: '%', digits: 1, domain: () => [0, 100], series: coreSeries,
+          sub: coreIds.length > 1 ? null : '켜진 코어 1개',
+          legend: coreIds.length > 1 ? h('div', { class: 'legend' }, coreIds.map((c, j) => legendLine(color(j), '코어 ' + c))) : null,
+        }));
+      }
+      out.push(tableView(() => {  // 지금 보이는 구간만
+        const m = g.merged, load = loadOf(m);
+        return table(['시각', '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
+          visibleIndex(m.buckets, m.xend, g).filter(i => m.coverage[i] != null)
+            .map(i => [stamp(m.buckets[i]), fmt(m.temp_avg[i], 1), fmt(m.freq[i]), fmt(load[i]), fmt(m.cpu[i], 1), m.undervolt_s[i]]), i => i > 0);
+      }, true));
     } else {
       charts.append(empty('이 기간 기록 없음', '모니터가 기록을 남기면 표시'));
     }

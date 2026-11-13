@@ -94,6 +94,15 @@ b,strong{font-weight:600}
 .chart{position:relative;min-width:0;width:100%}
 .chart svg{display:block;touch-action:pan-y;max-width:100%;user-select:none;-webkit-user-select:none}
 .chart text{font-family:var(--sans)}
+/* 가로로 끄는 차트: y축은 왼쪽에 고정하고 그림만 스크롤 */
+.panwrap{display:flex;align-items:flex-start;min-width:0}
+.panwrap .yaxis{flex:none}
+.pan{flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;cursor:grab;overscroll-behavior-x:contain}
+.pan.dragging{cursor:grabbing}
+.chart .pan svg{max-width:none;touch-action:pan-x pan-y}
+.panbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:13px}
+.panbar .range{color:var(--ink2);font-variant-numeric:tabular-nums;min-width:0}
+.panbar .ghost{min-height:36px;padding:4px 10px}
 .tick{font-size:12px;fill:var(--muted);font-variant-numeric:tabular-nums}
 .endlabel{font-size:12px;fill:var(--ink2)}
 .tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;

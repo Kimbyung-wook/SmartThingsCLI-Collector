@@ -244,7 +244,7 @@ class CoreApiTests(TempDirMixin, unittest.TestCase):
         self.assertEqual(q["cpu_cores"]["0"][i - 1:i + 2], [10.0, 50.0, None])  # 깨진 JSON 은 null
         self.assertEqual(q["cpu_cores"]["1"][i - 1:i + 1], [30.0, None])  # 꺼진 코어는 null
         self.assertEqual(q["cpu_cores"]["3"][i], 30.0)
-        self.assertTrue(all(len(v) == 60 for v in q["cpu_cores"].values()))
+        self.assertTrue(all(len(v) == 180 for v in q["cpu_cores"].values()))
         self.assertEqual(d["current"]["cpu_pct"], 12.0)
         self.assertEqual(d["current"]["cpu_pct_1m"], 15.5)
         self.assertEqual(d["current"]["cpu_cores"], {"0": 20.0, "1": 4.0})

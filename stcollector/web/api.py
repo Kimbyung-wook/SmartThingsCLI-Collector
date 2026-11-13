@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shutil
+from bisect import bisect_right
 import sqlite3
 import time
 from collections import defaultdict
@@ -23,7 +24,9 @@ from ..rollup import (
 )
 
 ROLLUP_TABLES = {"hour": "rollup_hour", "day": "rollup_day", "week": "rollup_week"}
-TREND_PERIODS = {"24h": ("hour", 24), "month": ("day", 30), "year": ("week", 52)}
+TREND_PERIODS = {"24h": ("hour", 24), "month": ("day", 30), "year": ("week", 52)}  # (단위, 한 화면 구간 수)
+# 한 번에 보내는 묶음 크기 (구간 수). 화면은 이 중 한 화면만큼 보여 주고, 끌면 이전 묶음을 더 받는다.
+TREND_CHUNKS = {"24h": 72, "month": 90, "year": 156}  # 3일, 90일, 3년
 TREND_METRICS = {"temperature", "humidity", "illuminance", "dewpoint"}
 DIST_PERIODS = {"week": 7, "month": 30, "year": 365}
 OCC_PERIODS = {"month": 30, "year": 365}
@@ -38,7 +41,9 @@ STALE_HISTORY_MS = 10 * 60 * 1000
 STALE_ROLLUP_MS = 2 * HOUR_MS + 10 * 60 * 1000
 LOW_BATTERY = 20
 LOW_DISK_BYTES = 1024**3
-SYSMON_PERIODS = {"24h": (5 * 60 * 1000, 288), "1h": (60 * 1000, 60)}  # (구간 ms, 구간 수)
+SYSMON_PERIODS = {"24h": (5 * 60 * 1000, 288), "1h": (60 * 1000, 60)}  # (구간 ms, 한 화면 구간 수)
+SYSMON_CHUNKS = {"24h": 3 * DAY_MS, "1h": 3 * HOUR_MS}  # 한 번에 보내는 길이
+_END_MAX = 10**15
 SYSMON_STALE_MS = 30_000
 SYSMON_EVENT_LIMIT = 100
 SYSMON_ALERT_KINDS = {
@@ -56,6 +61,16 @@ def _r(value, digits=2):
     if value is None or not math.isfinite(value):
         return None
     return round(value, digits)
+
+
+def _end_param(params: dict) -> int | None:
+    """끝 시각 end (UTC ms, 이 시각 앞까지). 없으면 None = 최신."""
+    raw = params.get("end")
+    if raw is None or raw == "":
+        return None
+    if not raw.isdigit() or len(raw) > 15 or int(raw) >= _END_MAX:
+        raise BadRequest("end 값이 올바르지 않습니다")
+    return int(raw)
 
 
 def _choice(params: dict, name: str, allowed, default=None) -> str:
@@ -177,35 +192,48 @@ def _to_celsius(value, unit):
 
 
 # ---- /api/series ------------------------------------------------------------
-def _buckets(ctx: Context, period: str) -> tuple[str, list[int]]:
-    grain, count = TREND_PERIODS[period]
+def _buckets(ctx: Context, period: str, end: int | None = None) -> tuple[str, list[int]]:
+    """묶음의 구간 시작 시각들. end 가 있으면 그 시각 앞에서 끝나는 묶음 (최신보다 뒤로는 가지 않는다)."""
+    grain, _ = TREND_PERIODS[period]
+    count = TREND_CHUNKS[period]
     now = ctx.now_ms
     if grain == "hour":
-        end = ctx.closed_until if ctx.closed_until is not None else floor_hour(now)
-        return grain, [end - (count - i) * HOUR_MS for i in range(count)]
-    if grain == "day":
-        today = kst_day_start(now)
-        return grain, [today - (count - 1 - i) * DAY_MS for i in range(count)]
-    week = kst_week_start(now)
-    return grain, [week - (count - 1 - i) * WEEK_MS for i in range(count)]
+        step, latest = HOUR_MS, ctx.closed_until if ctx.closed_until is not None else floor_hour(now)
+        stop = latest if end is None else min(latest, floor_hour(end))
+    elif grain == "day":
+        step, latest = DAY_MS, kst_day_start(now) + DAY_MS
+        stop = latest if end is None else min(latest, kst_day_start(end))
+    else:
+        step, latest = WEEK_MS, kst_week_start(now) + WEEK_MS
+        stop = latest if end is None else min(latest, kst_week_start(end))
+    return grain, [stop - (count - i) * step for i in range(count)]
 
 
-def _rows_by_bucket(ctx, table, device, attribute, start):
+def _rows_by_bucket(ctx, table, device, attribute, start, last):
     return {
         r[0]: r for r in ctx.conn.execute(
             f"SELECT bucket_start, avg, min, max, coverage FROM {table} "
-            "WHERE device_id=? AND attribute=? AND bucket_start>=? ORDER BY bucket_start",
-            (device, attribute, start),
+            "WHERE device_id=? AND attribute=? AND bucket_start>=? AND bucket_start<=? ORDER BY bucket_start",
+            (device, attribute, start, last),
         )
     }
+
+
+def _oldest(ctx, table, pairs) -> int | None:
+    """(기기, 속성) 들 중 가장 이른 구간 시작. 기본 키 앞부분이라 표를 훑지 않는다."""
+    found = [ctx.conn.execute(f"SELECT MIN(bucket_start) FROM {table} WHERE device_id=? AND attribute=?",
+                              pair).fetchone()[0] for pair in pairs]
+    found = [v for v in found if v is not None]
+    return min(found) if found else None
 
 
 def series(ctx: Context, params: dict) -> dict:
     metric = _choice(params, "metric", TREND_METRICS, "temperature")
     period = _choice(params, "period", TREND_PERIODS, "24h")
-    grain, buckets = _buckets(ctx, period)
+    grain, buckets = _buckets(ctx, period, _end_param(params))
     table = ROLLUP_TABLES[grain]
-    start = buckets[0]
+    start, last = buckets[0], buckets[-1]
+    pairs = []
     rooms = ctx.rooms()
     out = []
     digits = 0 if metric == "illuminance" else 1
@@ -218,8 +246,9 @@ def series(ctx: Context, params: dict) -> dict:
             )
             if h is None:
                 continue
-            tr = _rows_by_bucket(ctx, table, t.device_id, "temperature", start)
-            hr = _rows_by_bucket(ctx, table, h.device_id, "humidity", start)
+            pairs.append((t.device_id, "temperature"))
+            tr = _rows_by_bucket(ctx, table, t.device_id, "temperature", start, last)
+            hr = _rows_by_bucket(ctx, table, h.device_id, "humidity", start, last)
             avg, cov = [], []
             for b in buckets:
                 a, c = tr.get(b), hr.get(b)
@@ -231,7 +260,8 @@ def series(ctx: Context, params: dict) -> dict:
     else:
         items = ctx.index.get(metric, [])
         for s in items:
-            rows = _rows_by_bucket(ctx, table, s.device_id, metric, start)
+            pairs.append((s.device_id, metric))
+            rows = _rows_by_bucket(ctx, table, s.device_id, metric, start, last)
             avg, lo, hi, cov = [], [], [], []
             for b in buckets:
                 row = rows.get(b)
@@ -242,8 +272,10 @@ def series(ctx: Context, params: dict) -> dict:
             out.append({"id": s.device_id, "name": s.place, "color": ctx.color(s.place, rooms),
                         "avg": avg, "min": lo, "max": hi, "coverage": cov})
         unit = {"temperature": "°C", "humidity": "%", "illuminance": "lx"}[metric]
+    oldest = _oldest(ctx, table, pairs)
     return {"metric": metric, "period": period, "grain": grain, "unit": unit, "digits": digits,
-            "buckets": buckets, "closed_until": ctx.closed_until, "series": out}
+            "view": TREND_PERIODS[period][1], "buckets": buckets, "closed_until": ctx.closed_until,
+            "oldest_ms": oldest, "has_older": oldest is not None and oldest < start, "series": out}
 
 
 # ---- /api/lux-dist ----------------------------------------------------------
@@ -690,29 +722,41 @@ def _sysmon_current(ctx: Context) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _sysmon_rows(ctx: Context, start: int) -> tuple[list[tuple], list[tuple], bool]:
-    """(1분 요약, 이벤트, DB 있음). 모니터를 켠 적이 없으면 빈 결과다."""
+_SYSMON_COLS = ("ts_ms", "temp_avg", "temp_min", "temp_max", "freq_avg", "load_avg", "undervolt_s", "overheat_s",
+                "cpu_avg", "cpu_cores")
+
+
+def _sysmon_rows(ctx: Context, start: int, end: int, with_hours: bool) -> dict | None:
+    """sysmon.db 에서 [start, end) 의 1분·1시간 요약과 최근 이벤트. 모니터를 켠 적이 없으면 None.
+
+    행은 _SYSMON_COLS 순서에 '분 수'(1분 요약은 1)를 붙인 튜플이다.
+    """
     path = ctx.sysmon_db
     if path is None or not Path(path).exists():
-        return [], [], False
+        return None
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     try:
-        # cpu_avg, cpu_cores 는 모니터가 새 판으로 재시작해야 생긴다. 웹은 읽기 전용이라 없으면 NULL 로 읽는다.
+        # cpu_avg, cpu_cores, hours 는 모니터가 새 판으로 재시작해야 생긴다. 웹은 읽기 전용이라 없으면 비워 읽는다.
         cols = {r[1] for r in conn.execute("PRAGMA table_info(minutes)")}
-        extra = ", ".join(c if c in cols else "NULL" for c in ("cpu_avg", "cpu_cores"))
-        minutes = conn.execute(
-            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, undervolt_s, overheat_s, "
-            f"{extra} FROM minutes WHERE ts_ms>=? ORDER BY ts_ms", (start,),
-        ).fetchall()
+        names = ", ".join(c if c in cols else "NULL" for c in _SYSMON_COLS)
+        minutes = conn.execute(f"SELECT {names}, 1 FROM minutes WHERE ts_ms>=? AND ts_ms<? ORDER BY ts_ms",
+                               (start, end)).fetchall()
+        oldest_minute = conn.execute("SELECT MIN(ts_ms) FROM minutes").fetchone()[0]
+        hours, oldest_hour = [], None
+        if with_hours and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hours'").fetchone():
+            hours = conn.execute(f"SELECT {', '.join(_SYSMON_COLS)}, minutes FROM hours WHERE ts_ms>=? AND ts_ms<? "
+                                 "ORDER BY ts_ms", (start - start % HOUR_MS, end)).fetchall()
+            oldest_hour = conn.execute("SELECT MIN(ts_ms) FROM hours").fetchone()[0]
         events = conn.execute(
             "SELECT id, kind, start_ms, end_ms, seconds, interrupted, temp_c, freq_mhz, load1, procs_json "
             "FROM events ORDER BY start_ms DESC, id DESC LIMIT ?", (SYSMON_EVENT_LIMIT,),
         ).fetchall()
     except sqlite3.OperationalError:  # 모니터가 표를 만들기 전
-        return [], [], False
+        return None
     finally:
         conn.close()
-    return minutes, events, True
+    return {"minutes": minutes, "hours": hours, "events": events,
+            "oldest_minute": oldest_minute, "oldest_hour": oldest_hour}
 
 
 def _cpu_count() -> int:
@@ -742,28 +786,64 @@ def _mean(values: list):
     return sum(values) / len(values) if values else None
 
 
+def _sysmon_grid(period: str, start: int, end: int, minute_from: int | None,
+                 hour_from: int | None) -> tuple[list[int], int | None]:
+    """구간 시작 시각들과, 그 앞은 1시간 구간인 경계 (없으면 None).
+
+    24시간 보기는 1분 요약이 있는 동안 5분, 그 앞은 1시간 요약으로 1시간 구간이다.
+    경계는 1분 요약의 첫 정시라서 두 구간이 겹치거나 비지 않는다.
+    1분 요약보다 이른 1시간 요약이 없으면(보관 기간이 아직 안 지남) 나누지 않는다.
+    """
+    bucket_ms = SYSMON_PERIODS[period][0]
+    if minute_from is None:
+        minute_from = end
+    split = minute_from + (-minute_from) % HOUR_MS
+    if period != "24h" or hour_from is None or hour_from >= split - HOUR_MS or split <= start:
+        return list(range(start, end, bucket_ms)), None
+    split = min(split, end)
+    hourly = list(range(start - start % HOUR_MS, split, HOUR_MS))
+    return hourly + list(range(split, end, bucket_ms)), split
+
+
 def system(ctx: Context, params: dict) -> dict:
     now = ctx.now_ms
     period = _choice(params, "period", SYSMON_PERIODS, "24h")
-    bucket_ms, bucket_count = SYSMON_PERIODS[period]
+    bucket_ms, _ = SYSMON_PERIODS[period]
     # 1시간 보기는 끝난 분까지만 쓴다. 진행 중인 분은 아직 1분 요약이 없어 끝이 늘 비기 때문이다.
-    end = now - now % bucket_ms + (bucket_ms if period == "24h" else 0)
-    start = end - bucket_count * bucket_ms
+    latest = now - now % bucket_ms + (bucket_ms if period == "24h" else 0)
+    asked = _end_param(params)
+    end = latest if asked is None else min(latest, asked - asked % bucket_ms)
+    start = end - SYSMON_CHUNKS[period]
     current = _sysmon_current(ctx)
-    minutes, events, has_db = _sysmon_rows(ctx, start)
+    data = _sysmon_rows(ctx, start, end, period == "24h")
+    has_db = data is not None
+    data = data or {"minutes": [], "hours": [], "events": [], "oldest_minute": None, "oldest_hour": None}
 
-    by_minute = {r[0]: r for r in minutes}
+    by_minute = {r[0]: r for r in data["minutes"]}
     for p in (current or {}).get("pending") or []:  # 아직 DB에 저장되지 않은 최근 분
-        if isinstance(p, dict) and p.get("ts_ms", 0) >= start:
+        if isinstance(p, dict) and isinstance(p.get("ts_ms"), int) and start <= p["ts_ms"] < end:
             by_minute[p["ts_ms"]] = (p["ts_ms"], p.get("temp_avg"), p.get("temp_min"), p.get("temp_max"),
                                      p.get("freq_avg"), p.get("load_avg"), p.get("undervolt_s", 0), p.get("overheat_s", 0),
-                                     p.get("cpu_avg"), p.get("cpu_cores"))
+                                     p.get("cpu_avg"), p.get("cpu_cores"), 1)
+    minute_from = data["oldest_minute"]
+    if by_minute:
+        minute_from = min(by_minute) if minute_from is None else min(minute_from, min(by_minute))
+    buckets, split = _sysmon_grid(period, start, end, minute_from, data["oldest_hour"])
+    count = len(buckets)
+    ends = buckets[1:] + [end]
 
-    groups: list[list[tuple]] = [[] for _ in range(bucket_count)]
+    groups: list[list[tuple]] = [[] for _ in range(count)]
     for ts, row in by_minute.items():
-        i = (ts - start) // bucket_ms
-        if 0 <= i < bucket_count:
+        if split is not None and ts < split:
+            continue  # 경계 앞은 1시간 요약을 쓴다
+        i = bisect_right(buckets, ts) - 1
+        if i >= 0:
             groups[i].append(row)
+    for row in data["hours"]:
+        if split is not None and row[0] < split:
+            i = bisect_right(buckets, row[0]) - 1
+            if i >= 0 and buckets[i] == row[0]:
+                groups[i].append(row)
 
     def column(index, fn, digits):
         out = []
@@ -776,23 +856,24 @@ def system(ctx: Context, params: dict) -> dict:
     core_values: dict[str, list[list[float]]] = {}
     for i, rows in enumerate(groups):
         for r in rows:
-            for core, pct in _cores(r[9] if len(r) > 9 else None).items():
-                core_values.setdefault(core, [[] for _ in range(bucket_count)])[i].append(pct)
+            for core, pct in _cores(r[9]).items():
+                core_values.setdefault(core, [[] for _ in range(count)])[i].append(pct)
     cpu_cores = {core: [_r(_mean(v), 1) if v else None for v in core_values[core]]
                  for core in sorted(core_values, key=int)}
 
-    per_bucket_minutes = bucket_ms // 60000
+    oldest = [v for v in (data["oldest_minute"], data["oldest_hour"] if period == "24h" else None) if v is not None]
+    oldest_ms = min(oldest) if oldest else (min(by_minute) if by_minute else None)
     series = {
-        "buckets": [start + i * bucket_ms for i in range(bucket_count)],
+        "buckets": buckets,
         "temp_avg": column(1, _mean, 1), "temp_min": column(2, min, 1), "temp_max": column(3, max, 1),
-        "freq": column(4, _mean, 0), "load": column(5, _mean, 2),
-        "cpu": [_r(_mean(v), 1) if (v := [r[8] for r in rows if len(r) > 8 and r[8] is not None]) else None
-                for rows in groups],
+        "freq": column(4, _mean, 0), "load": column(5, _mean, 2), "cpu": column(8, _mean, 1),
         "cpu_cores": cpu_cores,
         "undervolt_s": [sum(r[6] or 0 for r in rows) for rows in groups],
         "overheat_s": [sum(r[7] or 0 for r in rows) for rows in groups],
-        "coverage": [_r(min(1.0, len(rows) / per_bucket_minutes), 2) if rows else None for rows in groups],
+        "coverage": [_r(min(1.0, sum(r[10] for r in rows) * 60000 / (e - b)), 2) if rows else None
+                     for rows, b, e in zip(groups, buckets, ends)],
     }
+    events = data["events"]
 
     out_events = []
     for r in events:
@@ -813,6 +894,9 @@ def system(ctx: Context, params: dict) -> dict:
         view["top"] = current.get("top") or []
         view["stale"] = now - ts > SYSMON_STALE_MS
     return {"available": has_db or current is not None, "cpu_count": _cpu_count(), "current": view,
+            "period": period, "bucket_ms": bucket_ms, "view_ms": SYSMON_PERIODS[period][0] * SYSMON_PERIODS[period][1],
+            "end": end, "hourly_until": split, "oldest_ms": oldest_ms,
+            "has_older": oldest_ms is not None and oldest_ms < buckets[0],
             "series": series, "events": out_events}
 
 

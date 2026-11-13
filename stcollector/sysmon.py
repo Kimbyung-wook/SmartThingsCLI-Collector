@@ -5,6 +5,8 @@ sysfs 와 /proc 만 읽는다. 외부 프로세스를 띄우지 않고 네트워
 
 - 현재값은 tmpfs(/run)의 JSON 에 매 주기 쓴다. microSD 에는 쓰지 않는다.
 - 1분 요약은 메모리에 모았다가 flush_s 마다 한 번에 저장한다.
+- 한 시간이 끝날 때마다 1분 요약으로 1시간 요약(hours) 한 행을 만든다. 1분 요약은 보관 기간이
+  지나면 지우지만 1시간 요약은 지우지 않는다 (하루 24행, 1년 약 1MB).
 - 전압 부족·스로틀링·과열이 시작되면 직전 약 60초의 프로세스별 CPU 사용량과 함께 바로 저장한다.
   프로세스는 이름(comm)만 쓴다. 명령행은 비밀값이 있을 수 있어 읽지 않는다.
 """
@@ -30,6 +32,7 @@ from .settings import SysmonSettings, sysmon_db_path
 log = logging.getLogger(__name__)
 
 MINUTE_MS = 60_000
+HOUR_MS = 3_600_000
 DAY_MS = 86_400_000
 PROC_WINDOW_S = 60
 TOP_PROCESSES = 8
@@ -62,6 +65,22 @@ CREATE TABLE IF NOT EXISTS minutes (
     overheat_s  INTEGER NOT NULL DEFAULT 0,
     throttle_s  INTEGER NOT NULL DEFAULT 0,
     samples     INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS hours (
+    ts_ms       INTEGER PRIMARY KEY,   -- 시 시작 시각 (UTC ms, KST 와 경계가 같다)
+    temp_avg    REAL,
+    temp_min    REAL,
+    temp_max    REAL,
+    freq_avg    REAL,
+    load_avg    REAL,
+    cpu_avg     REAL,
+    cpu_cores   TEXT,                  -- 코어별 평균 JSON (minutes 와 같은 형식)
+    mem_min_mb  INTEGER,               -- 그 시간의 최솟값
+    disk_free_gb REAL,                 -- 그 시간의 마지막 값
+    undervolt_s INTEGER NOT NULL DEFAULT 0,
+    overheat_s  INTEGER NOT NULL DEFAULT 0,
+    throttle_s  INTEGER NOT NULL DEFAULT 0,
+    minutes     INTEGER NOT NULL       -- 1분 요약 행 수 (60 이면 빠짐 없음)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -350,6 +369,43 @@ class SysmonStore:
                 rows,
             )
 
+    def rollup_hours(self, until_ms: int) -> int:
+        """until_ms 전까지 끝난 시간을 1분 요약으로 묶어 hours 에 쓴다. 쓴 행 수.
+
+        meta hours_done 다음 시부터 이어 간다. 처음에는 남아 있는 1분 요약 전체로 채운다.
+        """
+        until = until_ms - until_ms % HOUR_MS
+        done = self.get_meta("hours_done")
+        if done is not None and done.isdigit():
+            start = int(done)
+        else:
+            row = self.conn.execute("SELECT MIN(ts_ms) FROM minutes").fetchone()
+            if row[0] is None:
+                return 0
+            start = row[0] - row[0] % HOUR_MS
+        if start >= until:
+            return 0
+        rows = self.conn.execute(
+            "SELECT ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, cpu_avg, cpu_cores, mem_avail_mb, "
+            "disk_free_gb, undervolt_s, overheat_s, throttle_s FROM minutes WHERE ts_ms>=? AND ts_ms<? ORDER BY ts_ms",
+            (start, until),
+        ).fetchall()
+        groups: dict[int, list[tuple]] = defaultdict(list)
+        for r in rows:
+            groups[r[0] - r[0] % HOUR_MS].append(r)
+        out = [_hour_row(hour, items) for hour, items in sorted(groups.items())]
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO hours(ts_ms, temp_avg, temp_min, temp_max, freq_avg, load_avg, cpu_avg, "
+                "cpu_cores, mem_min_mb, disk_free_gb, undervolt_s, overheat_s, throttle_s, minutes) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", out,
+            )
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('hours_done', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(until),),
+            )
+        return len(out)
+
     def start_event(self, kind: str, start_ms: int, sample: Sample | None, procs: list[dict]) -> int:
         with self.conn:
             cur = self.conn.execute(
@@ -373,6 +429,33 @@ class SysmonStore:
         with self.conn:
             self.conn.execute("DELETE FROM minutes WHERE ts_ms<?", (now_ms - minute_days * DAY_MS,))
             self.conn.execute("DELETE FROM events WHERE start_ms<?", (now_ms - event_days * DAY_MS,))
+
+
+def _hour_row(hour: int, rows: list[tuple]) -> tuple:
+    """1분 요약 행들(rollup_hours 의 SELECT 순서)을 1시간 요약 한 행으로."""
+    def col(i):
+        return [r[i] for r in rows if r[i] is not None]
+
+    def avg(values, digits):
+        return round(sum(values) / len(values), digits) if values else None
+
+    cores: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        try:
+            data = json.loads(r[7]) if r[7] else {}
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            for core, pct in data.items():
+                if str(core).isdigit() and isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                    cores[str(core)].append(float(pct))
+    cores_json = json.dumps({c: round(sum(v) / len(v), 1) for c, v in sorted(cores.items(), key=lambda kv: int(kv[0]))},
+                            separators=(",", ":")) if cores else None
+    temps_min, temps_max, mem, disk = col(2), col(3), col(8), col(9)
+    return (hour, avg(col(1), 2), min(temps_min) if temps_min else None, max(temps_max) if temps_max else None,
+            avg(col(4), 1), avg(col(5), 2), avg(col(6), 1), cores_json, min(mem) if mem else None,
+            disk[-1] if disk else None, sum(r[10] or 0 for r in rows), sum(r[11] or 0 for r in rows),
+            sum(r[12] or 0 for r in rows), len(rows))
 
 
 class _MinuteBucket:
@@ -454,6 +537,7 @@ class Monitor:
             start = now_ms - (uptime_s or 0) * 1000
             self.store.end_event(self.store.start_event("boot", start, None, []), start, 0)
             self.store.set_meta("boot_id", boot_id)
+        self.store.rollup_hours(now_ms)  # 처음 실행이면 남은 1분 요약 전체로 채운다
 
     def conditions(self, s: Sample) -> dict[str, bool]:
         out = {
@@ -506,6 +590,8 @@ class Monitor:
     def flush(self) -> None:
         self.store.add_minutes(self.pending)
         self.pending = []
+        if self.bucket is not None:  # 지금 모으는 분 앞까지는 모두 저장됐다
+            self.store.rollup_hours(self.bucket.ts_ms)
 
     def step(self, s: Sample, procs: dict) -> None:
         if self.last_flush_ms is None:

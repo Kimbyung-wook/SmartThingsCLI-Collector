@@ -378,7 +378,7 @@ class SystemApiTests(TempDirMixin, unittest.TestCase):
         self.assertEqual(d["current"]["temp_c"], 51.0)
         self.assertFalse(d["current"]["stale"])
         self.assertNotIn("pending", d["current"])
-        self.assertEqual(len(d["series"]["buckets"]), 288)
+        self.assertEqual(len(d["series"]["buckets"]), 864)  # 3일 묶음, 5분 간격
         self.assertEqual(sum(d["series"]["undervolt_s"]), 10)
         self.assertIn(60.0, d["series"]["temp_max"])
         self.assertEqual(d["events"][0]["procs"][0]["name"], "smartthings")
@@ -388,7 +388,7 @@ class SystemApiTests(TempDirMixin, unittest.TestCase):
         status, body = self.get("/api/system?period=1h")
         self.assertEqual(status, 200)
         q = json.loads(body)["series"]
-        self.assertEqual(len(q["buckets"]), 60)
+        self.assertEqual(len(q["buckets"]), 180)  # 3시간 묶음, 1분 간격
         self.assertEqual(q["buckets"][1] - q["buckets"][0], 60_000)
         self.assertLess(q["buckets"][-1], int(__import__("time").time() * 1000) - 59_000)
         self.assertEqual(sum(q["undervolt_s"]), 10)

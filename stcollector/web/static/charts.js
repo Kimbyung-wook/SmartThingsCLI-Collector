@@ -67,14 +67,15 @@
   // ---- 선 + 범위 띠 -------------------------------------------------------------
   /* o: {n, x(i), tip(i), series:[{name, color, avg, min, max, coverage}], band, log, unit, digits,
          aria, directLabels, domain:[lo,hi]}
-     band: 최소~최대 띠. 계열이 하나면 무채색(--band), 여럿이면 계열 색을 옅게(.rband) */
+     band: 최소~최대 띠. 계열이 하나면 무채색(--band), 여럿이면 계열 색을 옅게(.rband)
+     o.time 이 있으면 가로로 끄는 차트다 (pan 참고): x 는 시각에 비례하고 y축은 왼쪽에 고정 */
   function line(host, o) { mount(host, () => drawLine(host, o)); }
-  // 빈 구간을 점선으로 잇는 최대 길이 (x축 전체 칸 수에 대한 비율). 이 이상이면 끊는다
+  // 빈 구간을 점선으로 잇는 최대 길이. x축 전체 칸 수(끄는 차트는 한 화면 길이)에 대한 비율. 이 이상이면 끊는다
   const GAP_LINK_MAX = 0.25;
 
   function drawLine(host, o) {
     host.replaceChildren();
-    const W = width(host), Ht = o.height ? o.height(W) : (W < 520 ? 230 : 300), n = o.n;
+    const T = o.time, W = width(host), Ht = o.height ? o.height(W) : (W < 520 ? 230 : 300), n = o.n;
     const vals = [];
     o.series.forEach(se => {
       for (let i = 0; i < n; i++) {
@@ -84,6 +85,11 @@
     });
     let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
     if (o.domain) { lo = o.domain[0]; hi = o.domain[1]; }
+    if (T && T.domain) {  // 끄는 차트: 불러온 전체 기준이고 넓어지기만 한다
+      const d = T.domain;
+      if (isFinite(lo) && isFinite(hi)) { d.lo = d.lo == null ? lo : Math.min(d.lo, lo); d.hi = d.hi == null ? hi : Math.max(d.hi, hi); }
+      if (d.lo != null) { lo = d.lo; hi = d.hi; }
+    }
 
     let ticks, map;
     if (o.log) {
@@ -100,22 +106,40 @@
     const M = { l: Math.max(26, longest * 7 + 8), r: 14, t: 12, b: 26 };
     const lastIdx = se => { for (let i = n - 1; i >= 0; i--) if (se.avg[i] != null) return i; return -1; };
     let labels = null;
-    if (o.directLabels) {
+    if (o.directLabels && !T) {
       const widest = Math.max.apply(null, o.series.map(se => se.name.length));
       M.r = clamp(widest * 12 + 18, 40, 84);
     }
     const iw = W - M.l - M.r, ih = Ht - M.t - M.b;
-    const X = i => M.l + (n > 1 ? (i + 0.5) / n * iw : iw / 2);
+    // 끄는 차트의 그림 svg 는 0 부터 시작하고 폭은 불러온 기간 전체다. 한 화면(iw)이 T.view ms
+    let X, cellStart, cellEnd, PW = W, k = 0;
+    if (T) {
+      k = iw / T.view;
+      PW = Math.ceil((T.t1 - T.t0) * k) + M.r;
+      const xs = T.xs, endOf = i => (i + 1 < n ? xs[i + 1] : T.xend);
+      cellStart = i => (xs[i] - T.t0) * k;
+      cellEnd = i => (endOf(i) - T.t0) * k;
+      X = i => (cellStart(i) + cellEnd(i)) / 2;
+    } else {
+      X = i => M.l + (n > 1 ? (i + 0.5) / n * iw : iw / 2);
+      cellStart = i => X(i) - iw / n / 2;
+      cellEnd = i => X(i) + iw / n / 2;
+    }
     const Y = v => M.t + ih - map(v) * ih;
 
-    const svg = s('svg', { width: W, height: Ht, tabindex: 0, role: 'img', 'aria-label': o.aria });
+    const svg = s('svg', { width: PW, height: Ht, tabindex: 0, role: 'img', 'aria-label': o.aria });
+    let axis = null, pan = null;
+    if (T) {
+      axis = s('svg', { width: M.l, height: Ht, 'aria-hidden': 'true', class: 'yaxis' });
+      svg.setAttribute('class', 'plot');
+    }
     if (o.shade) {  // 경고 구간 표시. 짧은 구간도 보이도록 최소 2px
-      const step = iw / n;
       for (let i = 0, from = -1; i <= n; i++) {
         const on = i < n && o.shade(i);
         if (on && from < 0) from = i;
         if (!on && from >= 0) {
-          const r = s('rect', { x: (X(from) - step / 2).toFixed(1), y: M.t, width: Math.max(2, (i - from) * step).toFixed(1), height: ih }, svg);
+          const x0 = cellStart(from), x1 = cellEnd(i - 1);
+          const r = s('rect', { x: x0.toFixed(1), y: M.t, width: Math.max(2, x1 - x0).toFixed(1), height: ih }, svg);
           r.style.fill = 'var(--shade)';
           from = -1;
         }
@@ -123,13 +147,28 @@
     }
     ticks.forEach((t, i) => {
       const y = Y(t).toFixed(1);
-      const l = s('line', { x1: M.l, x2: W - M.r, y1: y, y2: y }, svg);
+      const l = s('line', { x1: T ? 0 : M.l, x2: T ? PW : W - M.r, y1: y, y2: y }, svg);
       l.style.stroke = i ? 'var(--grid)' : 'var(--axis)';
-      txt(svg, M.l - 6, +y + 4, tickLabels[i], 'tick', 'end');
+      txt(axis || svg, M.l - 6, +y + 4, tickLabels[i], 'tick', 'end');
     });
-    const every = Math.max(1, Math.ceil(n / Math.max(3, Math.floor(iw / 58))));
-    for (let i = n - 1; i >= 0; i -= every) {
-      txt(svg, X(i), Ht - 8, o.x(i), 'tick', i === n - 1 ? 'end' : 'middle');
+    if (T) {
+      // 라벨 사이를 58px 이상 띄워 오른쪽(최신)부터 놓는다. tickMs 가 있으면 그 간격의 정각에만 놓는다
+      const every = o.tickMs ? (o.tickMs.find(v => v * k >= 58) || o.tickMs[o.tickMs.length - 1]) : 0;
+      const off = o.tickOffset || 0;
+      let last = Infinity;
+      for (let i = n - 1; i >= 0; i--) {
+        const x = X(i);
+        if (x < 20) break;
+        if (every && (T.xs[i] + off) % every !== 0) continue;
+        if (last - x < 58 || x > PW - M.r - 10) continue;
+        txt(svg, x, Ht - 8, o.x(i), 'tick', 'middle');
+        last = x;
+      }
+    } else {
+      const every = Math.max(1, Math.ceil(n / Math.max(3, Math.floor(iw / 58))));
+      for (let i = n - 1; i >= 0; i -= every) {
+        txt(svg, X(i), Ht - 8, o.x(i), 'tick', i === n - 1 ? 'end' : 'middle');
+      }
     }
 
     // 띠를 모두 먼저 깔고 평균선을 그 위에 그린다. 여러 방이면 띠도 방 색(옅게)
@@ -148,7 +187,7 @@
           const q = 'M' + P(i, se.max[i]) + 'L' + P(i + 1, se.max[i + 1]) + 'L' + P(i + 1, se.min[i + 1]) + 'L' + P(i, se.min[i]) + 'Z';
           if (faint(i) || faint(i + 1)) faded += q; else solid += q;
         } else if (!(i > 0 && ok(i - 1))) {
-          const w = Math.max(2, iw / n / 2), x = X(i);
+          const w = Math.max(2, (cellEnd(i) - cellStart(i)) / 2), x = X(i);
           const q = 'M' + (x - w / 2).toFixed(1) + ' ' + Y(se.max[i]).toFixed(1) + 'H' + (x + w / 2).toFixed(1) + 'V' + Y(se.min[i]).toFixed(1) + 'H' + (x - w / 2).toFixed(1) + 'Z';
           if (faint(i)) faded += q; else solid += q;
         }
@@ -161,6 +200,8 @@
       drawBand(solid, 1); drawBand(faded, 0.5);
     });
 
+    // 점선으로 이을 만한 공백인가. 끄는 차트는 빈 시간의 길이로 판단한다
+    const linkable = T ? (i, j) => T.xs[j] - T.xs[i + 1] < T.view * GAP_LINK_MAX : (i, j) => j - i - 1 < n * GAP_LINK_MAX;
     let bridged = false;
     o.series.forEach(se => {
       const c = color(se.color);
@@ -177,7 +218,7 @@
         // 빈 칸 뒤의 첫 값과 점선으로 잇는다. 공백이 길면 지금처럼 끊는다
         let j = i + 2;
         while (j < n && !ok(j)) j++;
-        if (j < n && j - i - 1 < n * GAP_LINK_MAX) {
+        if (j < n && linkable(i, j)) {
           dashed += 'M' + P(i, se.avg[i]) + 'L' + P(j, se.avg[j]);
           linked.add(i); linked.add(j);
         }
@@ -202,7 +243,7 @@
     });
 
     // 끝 라벨: 겹치면 범례와 툴팁에 맡긴다
-    if (o.directLabels) {
+    if (o.directLabels && !T) {
       labels = o.series.map(se => { const i = lastIdx(se); return i < 0 ? null : { n: se.name, c: color(se.color), y: Y(se.avg[i]), x: X(i) }; }).filter(Boolean).sort((a, b) => a.y - b.y);
       const collide = labels.some((l, i) => i > 0 && l.y - labels[i - 1].y < 13);
       if (!collide) labels.forEach(l => txt(svg, W - M.r + 6, l.y + 4, l.n, 'endlabel'));
@@ -222,7 +263,17 @@
       d.style.fill = color(se.color); d.style.stroke = 'var(--surface)';
       return d;
     });
-    host.appendChild(svg);
+    if (T) {
+      const wrap = document.createElement('div');
+      wrap.className = 'panwrap';
+      pan = document.createElement('div');
+      pan.className = 'pan';
+      pan.appendChild(svg);
+      wrap.append(axis, pan);
+      host.appendChild(wrap);
+    } else {
+      host.appendChild(svg);
+    }
     if (bridged) {
       const key = document.createElement('div'), sw = document.createElement('i'), span = document.createElement('span');
       key.className = 'legend gapkey'; sw.className = 'dash-key';
@@ -261,20 +312,176 @@
       if (cov != null && cov < 0.9) rows.push({ key: '수집률', value: Math.round(cov * 100) + '%' });
       if (o.extra) rows.push(...o.extra(i));
       fillTip(t, o.tip(i), rows);
-      placeTip(host, t, X(i), top === Ht ? M.t + 40 : top);
+      const hx = T ? M.l + X(i) - pan.scrollLeft : X(i);  // 툴팁은 host 기준 좌표
+      placeTip(host, t, hx, top === Ht ? M.t + 40 : top);
     };
     const idx = e => {
       const r = svg.getBoundingClientRect();
-      return clamp(Math.floor((e.clientX - r.left - M.l) / iw * n), 0, n - 1);
+      if (!T) return clamp(Math.floor((e.clientX - r.left - M.l) / iw * n), 0, n - 1);
+      const tm = T.t0 + (e.clientX - r.left) / k;
+      let a = 0, b = n - 1;  // xs[i] <= tm 인 마지막 i
+      while (a < b) { const m = (a + b + 1) >> 1; if (T.xs[m] <= tm) a = m; else b = m - 1; }
+      return a;
     };
-    svg.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || e.buttons) show(idx(e)); });
+    const dragging = () => !!(T && T.dragging && T.dragging());
+    svg.addEventListener('pointermove', e => { if (!dragging() && (e.pointerType === 'mouse' || e.buttons)) show(idx(e)); });
     svg.addEventListener('pointerdown', e => show(idx(e)));
     svg.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
+    const reveal = i => {  // 키보드로 옮긴 점이 화면 밖이면 그쪽으로 끈다
+      if (!T) return;
+      const x = X(i), vw = pan.clientWidth;
+      if (x < pan.scrollLeft + 8 || x > pan.scrollLeft + vw - 8) pan.scrollLeft = x - vw / 2;
+    };
     svg.addEventListener('keydown', e => {
-      if (e.key === 'ArrowLeft') { show(Math.max(0, (cur < 0 ? n : cur) - 1)); e.preventDefault(); }
-      else if (e.key === 'ArrowRight') { show(Math.min(n - 1, cur + 1)); e.preventDefault(); }
+      let i = null;
+      if (e.key === 'ArrowLeft') i = Math.max(0, (cur < 0 ? n : cur) - 1);
+      else if (e.key === 'ArrowRight') i = Math.min(n - 1, cur + 1);
+      if (i == null) return;
+      e.preventDefault(); reveal(i); show(i);
     });
     svg.addEventListener('blur', hide);
+    return { pan, k, hide };
+  }
+
+  // ---- 가로로 끄는 차트 묶음 ------------------------------------------------------------
+  /* 같은 탭의 차트가 함께 움직인다. 처음엔 최신 구간을 보여 주고, 왼쪽 끝에 가까워지면
+     이전 묶음을 받아 앞에 붙인다. 불러온 묶음은 최대 max 개이고, 넘치면 보는 곳에서 먼 쪽을 버린다.
+     o: {view(ms), first: 묶음, load(end) -> Promise<묶음>, merge([data...]) -> 합친 data, range(t0, t1) -> 문구, max}
+     묶음: {start, end, data, hasOlder, oldest}. end 는 그 묶음이 끝나는 시각 (= 다음 묶음의 start) */
+  const PAN_MAX = 10, PAN_NEAR = 0.5;
+  function pan(o) {
+    const g = { chunks: [o.first], newer: [], hasOlder: !!o.first.hasOlder, oldest: o.first.oldest, loading: false,
+      left: null, charts: [], domains: {}, merged: null, max: o.max || PAN_MAX, view: o.view };
+    let drag = null;
+    const remerge = () => { g.merged = o.merge(g.chunks.map(c => c.data)); };
+    remerge();
+    g.bounds = () => {
+      const t1 = g.chunks[g.chunks.length - 1].end;
+      let t0 = g.chunks[0].start;
+      if (!g.hasOlder && g.oldest != null && g.oldest > t0) t0 = g.oldest;  // 첫 기록 앞의 빈 기간은 그리지 않는다
+      return [Math.min(t0, t1 - g.view), t1];
+    };
+    const clampLeft = v => { const [t0, t1] = g.bounds(); return clamp(v, t0, t1 - g.view); };
+
+    // ◀ 이전 / 보고 있는 구간 / 다음 ▶ / 최신
+    const btn = (text, label, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'ghost'; b.textContent = text; b.setAttribute('aria-label', label);
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const prev = btn('◀ 이전', '이전 구간', () => moveTo(g.left - g.view));
+    const next = btn('다음 ▶', '다음 구간', () => moveTo(g.left + g.view));
+    const latest = btn('최신', '최신 구간으로', () => toLatest());
+    const label = document.createElement('span');
+    label.className = 'range'; label.setAttribute('aria-live', 'polite');
+    g.bar = document.createElement('div');
+    g.bar.className = 'panbar';
+    g.bar.append(prev, label, next, latest);
+    const updateBar = () => {
+      if (g.left == null) return;
+      const [t0, t1] = g.bounds();
+      label.textContent = o.range(g.left, g.left + g.view) + (g.loading ? ' · 불러오는 중' : '');
+      prev.disabled = g.left <= t0 + 1 && !g.hasOlder;
+      const atEnd = g.left >= t1 - g.view - 1 && !g.newer.length;
+      next.disabled = atEnd; latest.disabled = atEnd;
+    };
+
+    const place = c => { if (c.r && c.r.pan) c.r.pan.scrollLeft = (g.left - g.bounds()[0]) * c.r.k; };
+    function moveTo(v) {
+      g.left = clampLeft(v);
+      g.charts.forEach(place);
+      updateBar();
+      check();
+    }
+    async function fetchChunk(end) {
+      g.loading = true; updateBar();
+      try { return await o.load(end); } finally { g.loading = false; }
+    }
+    async function check() {
+      if (g.loading || !g.charts.length || g.left == null) return;
+      const [t0, t1] = g.bounds();
+      try {
+        if (g.hasOlder && g.left - t0 < g.view * PAN_NEAR) {
+          const c = await fetchChunk(g.chunks[0].start);
+          g.chunks.unshift(c);
+          g.hasOlder = !!c.hasOlder;
+          if (c.oldest != null) g.oldest = c.oldest;
+          if (g.chunks.length > g.max) g.newer.push(g.chunks.pop().end);  // 가장 최신 묶음을 버리고 끝 시각만 기억한다
+        } else if (g.newer.length && t1 - (g.left + g.view) < g.view * PAN_NEAR) {
+          const c = await fetchChunk(g.newer.pop());
+          g.chunks.push(c);
+          if (g.chunks.length > g.max) { g.chunks.shift(); g.hasOlder = true; }
+        } else { updateBar(); return; }
+      } catch (e) { updateBar(); return; }  // 실패하면 다음 스크롤 때 다시 시도한다
+      if (!g.charts.some(c => c.host.isConnected)) return;  // 그 사이 다른 화면으로 바뀜
+      remerge();
+      g.left = clampLeft(g.left);  // 보던 시각을 그대로 두므로 앞에 붙여도 화면이 튀지 않는다
+      g.charts.forEach(c => c.host._draw());
+      updateBar();
+      check();
+    }
+    async function toLatest() {
+      if (g.newer.length) {  // 버린 최신 묶음이 있으면 처음 상태로 다시 받는다
+        let c;
+        try { c = await fetchChunk(null); } catch (e) { updateBar(); return; }
+        g.chunks = [c]; g.newer = []; g.hasOlder = !!c.hasOlder; g.oldest = c.oldest;
+        remerge();
+        g.left = g.bounds()[1] - g.view;
+        g.charts.forEach(x => x.host._draw());
+        updateBar();
+        return;
+      }
+      moveTo(Infinity);
+    }
+
+    /* host 에 차트 하나를 붙인다. make(merged) 는 line 옵션에 xs(구간 시작 시각 배열), xend 를 넣어 돌려준다.
+       key 가 같은 차트끼리 y축 범위를 공유한다 (다시 그려도 좁아지지 않게). */
+    g.add = (host, make, key) => {
+      const c = { host };
+      const dom = g.domains[key] || (g.domains[key] = {});
+      g.charts.push(c);
+      mount(host, () => {
+        const opt = make(g.merged);
+        const [t0, t1] = g.bounds();
+        if (g.left == null) g.left = t1 - g.view;
+        g.left = clampLeft(g.left);
+        opt.n = opt.xs.length;
+        opt.time = { xs: opt.xs, xend: opt.xend, t0, t1, view: g.view, domain: dom, dragging: () => !!(drag && drag.moved) };
+        c.r = drawLine(host, opt);
+        const p = c.r.pan;
+        place(c);
+        p.addEventListener('scroll', () => {
+          // 다시 그려 떼어 낸 옛 요소에도 밀려 있던 scroll 이 온다 (scrollLeft 0). 그대로 쓰면 왼쪽 끝으로 튄다
+          if (!p.isConnected || c.r.pan !== p) return;
+          c.r.hide();
+          const v = clampLeft(g.bounds()[0] + p.scrollLeft / c.r.k);
+          if (Math.abs(v - g.left) * c.r.k < 1.5) return;  // 다른 차트를 맞추며 생긴 반올림 차이
+          g.left = v;
+          g.charts.forEach(x => { if (x !== c) place(x); });
+          updateBar();
+          check();
+        }, { passive: true });
+        // 마우스 끌기. 터치는 브라우저 기본 가로 스크롤, 가로 휠도 기본 동작을 쓴다
+        p.addEventListener('pointerdown', e => {
+          if (e.pointerType !== 'mouse' || e.button !== 0) return;
+          drag = { x: e.clientX, left: p.scrollLeft, moved: false, id: e.pointerId };
+        });
+        p.addEventListener('pointermove', e => {
+          if (!drag || !(e.buttons & 1)) return;
+          const dx = e.clientX - drag.x;
+          if (!drag.moved && Math.abs(dx) > 4) { drag.moved = true; p.setPointerCapture(drag.id); p.classList.add('dragging'); c.r.hide(); }
+          if (drag.moved) p.scrollLeft = drag.left - dx;
+        });
+        const end = () => { if (drag && drag.moved) c.r.hide(); drag = null; p.classList.remove('dragging'); };
+        p.addEventListener('pointerup', end);
+        p.addEventListener('pointercancel', end);
+        updateBar();
+      });
+    };
+    g.visible = () => [g.left, g.left + g.view];  // 지금 보이는 구간 [시작, 끝)
+    g.start = () => { updateBar(); check(); };
+    return g;
   }
 
   // ---- 세로 막대 ----------------------------------------------------------------
@@ -395,5 +602,5 @@
     svg.addEventListener('blur', hide);
   }
 
-  window.Charts = { line, bars, heat, rampColor, resetTheme, color, fmt };
+  window.Charts = { line, pan, bars, heat, rampColor, resetTheme, color, fmt };
 })();
