@@ -82,6 +82,27 @@ class EdgeDriverFilesTests(unittest.TestCase):
         self.assertLessEqual(value["minimum"], -20)
         self.assertGreaterEqual(value["maximum"], 125)
 
+    def test_send_thresholds_are_constants(self):
+        consts = dict(re.findall(r"^local (\w+_STEP_\w+) = (\d+)", self.lua, re.M))
+        self.assertEqual(consts, {"TEMP_STEP_C": "1", "CPU_STEP_PCT": "5", "DISK_STEP_PCT": "1", "CLOCK_STEP_MHZ": "1"})
+        for name in consts:
+            self.assertIn(f", {name},", self.lua)
+        self.assertNotRegex(self.lua, r'emit_changed\(device, "\w+", num\([^)]*\), [\d.]+,')  # 숫자를 직접 쓰지 않음
+
+    def test_sent_values_persist(self):
+        self.assertIn("PERSIST = { persist = true }", self.lua)
+        self.assertIn("device:set_field(field, out, PERSIST)", self.lua)
+        self.assertNotIn('get_field("last_', self.lua)
+
+    def test_temperature_and_cpu_are_rounded(self):
+        self.assertRegex(self.lua, r'cpuTemperature\(\{ value = v, unit = "C" \}\) end, round\)')
+        self.assertRegex(self.lua, r'cpuUsage\(\{ value = v, unit = "%" \}\) end, round\)')
+
+    def test_last_collect_only_when_not_normal(self):
+        self.assertNotIn('emit_changed(device, "last", type(data.last_ok_text)', self.lua)
+        self.assertIn("update_last_collect(device, data.collect_ok == true", self.lua)
+        self.assertIn("update_last_collect(device, false, nil)", self.lua)
+
     def test_driver_has_no_write_requests(self):
         self.assertNotRegex(self.lua, r'method\s*=\s*"(POST|PUT|DELETE|PATCH)"')
         self.assertIn('"/hub/status"', self.lua)
