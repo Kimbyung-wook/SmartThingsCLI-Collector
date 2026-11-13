@@ -31,6 +31,10 @@ RETRY_DELAY_S = 30.0
 MAX_ERROR_CHARS = 300
 # RPi 실측: --after 를 주면 --limit 200, 500 이어도 100건까지만 돌려준다.
 MAX_HISTORY_PAGE = 100
+# 짧은 페이지의 최신 이벤트가 이보다 오래됐으면 끝이 아니라고 보고 한 번 더 읽는다.
+# CLI가 일부 이벤트(예: Edge 드라이버로 만든 LAN 기기)를 걸러 내면, 서버 페이지는 가득 찼는데도
+# limit 보다 적게 돌아온다 (2026-11-13 RPi에서 87/100건으로 수집이 멈춘 원인).
+SHORT_PAGE_SETTLE_MS = 5 * 60 * 1000
 
 
 class CliCommandNotAllowed(ValueError):
@@ -196,7 +200,11 @@ def run_cli(argv: Sequence[str], env: Mapping[str, str], timeout_s: float) -> tu
 
 # ---- 클라이언트 --------------------------------------------------------------
 class SmartThingsCliClient:
-    def __init__(self, cfg: Config, runner: Runner = run_cli, sleep=time.sleep, max_retries: int = 1):
+    def __init__(
+        self, cfg: Config, runner: Runner = run_cli, sleep=time.sleep, max_retries: int = 1,
+        clock=time.time,
+    ):
+        self.clock = clock
         self.cli_path = cfg.cli_path
         self.home = cfg.cli_home
         self.timeout_s = cfg.cli_timeout_s
@@ -288,9 +296,15 @@ class SmartThingsCliClient:
         while True:
             page = _items(self._run(command, (target,), {"--limit": limit, "--after": _to_iso(after)}))
             yield page
-            if len(page) < limit:
+            if not page:
                 return
             newest = max(int(item["epoch"]) for item in page)
+            if len(page) < limit:
+                # 짧은 페이지가 현재 시각 근처까지 왔으면 끝이다. 오래된 곳에서 끝났으면
+                # CLI가 걸러 낸 것일 수 있으므로, 앞으로 나아갈 수 있을 때만 한 번 더 읽는다.
+                recent = newest >= int(self.clock() * 1000) - SHORT_PAGE_SETTLE_MS
+                if recent or newest - 1 <= after:
+                    return
             # 경계와 같은 시각의 이벤트를 놓치지 않도록 1ms 겹친다. 중복은 DB가 걸러낸다.
             after = max(newest - 1, after + 1)
 

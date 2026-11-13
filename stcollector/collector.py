@@ -26,6 +26,9 @@ MIN_RETRY_S = 30.0
 # 이력 조회가 이만큼 연속으로 실패하면 기다리는 동안 현재값만 상태 조회로 임시 수집한다.
 # 한 번은 일시적인 500 으로 보고 넘긴다 (실측: 한 번 실패 후 1분 안에 성공한 경우가 있었다).
 HISTORY_FALLBACK_AFTER = 2
+# 이력 커서가 이 시간 동안 그대로이고 새 측정값도 없으면 정체로 보고 경고한다.
+# 조용한 밤에도 스마트플러그가 수 분마다 보고하므로 1시간 무소식은 이상 신호다.
+HISTORY_STALL_WARN_MS = 60 * 60 * 1000
 
 
 # ---- 값 변환 ---------------------------------------------------------------
@@ -118,6 +121,7 @@ class Collector:
         self._next_status: dict[str, float] = {}
         self._stop: threading.Event | None = None
         self._history_failures = 0
+        self._stall_warned_ms: int | None = None
 
     def _uses_cli(self) -> bool:
         return self.cfg.backend == "cli"
@@ -250,7 +254,30 @@ class Collector:
             if self.db.get_cursor(device_id) is None:
                 # 새로 추가된 기기만 기기별로 백필한다 (기기당 CLI 몇 회).
                 total += self._poll_history_device(device_id, now_ms)
+        self._check_stall(cursor, newest, total, now_ms)
         return total
+
+    def _check_stall(self, before: int | None, after: int, inserted: int, now_ms: int) -> None:
+        """커서가 그대로이고 저장 0건인 주기가 이어지면 경고한다 (meta history_stalled_since_ms)."""
+        if before is None or after > before or inserted:
+            if self.db.get_meta("history_stalled_since_ms") is not None:
+                log.info("이력 커서가 다시 움직입니다")
+                self.db.set_meta("history_stalled_since_ms", None)
+            self._stall_warned_ms = None
+            return
+        stored = self.db.get_meta("history_stalled_since_ms")
+        if stored is None:
+            self.db.set_meta("history_stalled_since_ms", now_ms)
+            return
+        since = int(stored)
+        if now_ms - since < HISTORY_STALL_WARN_MS:
+            return
+        if self._stall_warned_ms is None or now_ms - self._stall_warned_ms >= HISTORY_STALL_WARN_MS:
+            self._stall_warned_ms = now_ms
+            log.warning(
+                "이력 커서가 %.1f시간째 그대로이고 새 측정값이 없습니다 (커서 %s) — 수집 정체 의심",
+                (now_ms - since) / 3_600_000, time.strftime("%m-%d %H:%M", time.localtime(before / 1000)),
+            )
 
     def _poll_history_device(self, device_id: str, now_ms: int) -> int:
         cursor = self.db.get_cursor(device_id)

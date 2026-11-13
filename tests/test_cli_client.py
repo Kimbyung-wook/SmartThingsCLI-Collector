@@ -95,7 +95,9 @@ class CliTestBase(TempDirMixin, unittest.TestCase):
         return make_config(self.tmp, **values)
 
     def client(self, **overrides):
-        return SmartThingsCliClient(self.cfg(**overrides), runner=self.fake, sleep=self.sleeps.append)
+        # 가짜 이벤트(1970년 epoch)가 '최근'이 되도록 시계를 0으로 둔다.
+        return SmartThingsCliClient(self.cfg(**overrides), runner=self.fake, sleep=self.sleeps.append,
+                                    clock=lambda: 0.0)
 
 
 class AllowListTest(unittest.TestCase):
@@ -240,6 +242,29 @@ class ClientTest(CliTestBase):
             afters,
             ["1970-01-01T00:00:02.000Z", "1970-01-01T00:00:02.001Z", "1970-01-01T00:00:02.002Z"],
         )
+
+    def test_short_but_old_page_continues_until_recent(self):
+        # 서버 페이지는 100건이었지만 CLI가 일부를 걸러 짧게 돌려준 경우 (2026-11-13 정체 원인)
+        old = SmartThingsCliClient(self.cfg(), runner=self.fake, clock=lambda: 3600.0)
+        self.fake.add("locations:history", [ev(5000), ev(4000)], [ev(9000), ev(5000)], [ev(3_599_000)])
+        pages = list(old.location_history_pages(LOC, limit=3, after_ms=1000))
+        self.assertEqual(len(pages), 3)
+        self.assertEqual(
+            [option(a, "--after") for a in self.fake.named("locations:history")],
+            ["1970-01-01T00:00:01.000Z", "1970-01-01T00:00:04.999Z", "1970-01-01T00:00:08.999Z"],
+        )
+
+    def test_short_old_page_without_progress_stops(self):
+        old = SmartThingsCliClient(self.cfg(), runner=self.fake, clock=lambda: 3600.0)
+        self.fake.add("locations:history", [ev(5000)], [ev(5000)])
+        list(old.location_history_pages(LOC, limit=3, after_ms=1000))
+        self.assertEqual(len(self.fake.calls), 2)
+
+    def test_empty_page_stops(self):
+        old = SmartThingsCliClient(self.cfg(), runner=self.fake, clock=lambda: 3600.0)
+        self.fake.add("locations:history", [])
+        list(old.location_history_pages(LOC, limit=3, after_ms=1000))
+        self.assertEqual(len(self.fake.calls), 1)
 
     def test_limit_is_capped_at_cli_page_size(self):
         # limit 200 이어도 CLI는 100건만 주므로, 100건을 '짧은 페이지'로 오해하면 안 된다.
@@ -406,7 +431,7 @@ class CollectorCliTest(CliTestBase):
 
     def collector(self, **cfg_overrides):
         cfg = self.cfg(**cfg_overrides)
-        client = SmartThingsCliClient(cfg, runner=self.fake, sleep=self.sleeps.append)
+        client = SmartThingsCliClient(cfg, runner=self.fake, sleep=self.sleeps.append, clock=lambda: NOW)
         c = Collector(cfg, client, self.db, clock=lambda: NOW)
         c.refresh_devices()
         return c
@@ -487,6 +512,67 @@ class CollectorCliTest(CliTestBase):
         self.assertEqual(self.db.get_meta(CURSOR_KEY), str(NOW_MS - 5000))
         self.assertEqual(c.poll_history(), 1)
         self.assertEqual(self.db.get_meta(CURSOR_KEY), str(NOW_MS - 1000))
+
+    def test_filtered_full_server_page_does_not_freeze_cursor(self):
+        """RPi 재현: 커서 앞 10분 구간에 서버 이벤트가 100건 넘게 몰리고, CLI가 그중 한 기기의 이벤트를 걸러
+        87건만 돌려주면 예전 코드는 '끝'으로 보고 같은 87건만 반복해 받았다."""
+        cursor = NOW_MS - 3 * 3600_000
+        self.db.set_meta(CURSOR_KEY, cursor)
+        for d in ("t1", "m1"):
+            self.db.set_cursor(d, cursor)
+        since = cursor - HISTORY_OVERLAP_MS
+
+        def server_page(after, n=100):
+            # 서버가 보는 100건 중 13건은 CLI가 거르는 기기(edge1) 이벤트
+            events = [ev(after + 1 + i * 6000, device="edge1" if i % 8 == 0 else "t1") for i in range(n)]
+            return sorted([e for e in events if e["deviceId"] != "edge1"], key=lambda e: -e["epoch"])
+
+        page1 = server_page(since)                          # 87건, 모두 커서 이전 → 예전 코드는 여기서 멈춤
+        newest1 = max(e["epoch"] for e in page1)
+        page2 = server_page(newest1 - 1, n=40)[:-1]          # 짧고 최신 이벤트도 3시간 전 → 계속
+        newest2 = max(e["epoch"] for e in page2)
+        page3 = [ev(NOW_MS - 1000)]                         # 현재 근처 → 끝
+        self.assertEqual(len(page1), 87)
+        self.fake.add("locations:history", page1, page2, page3)
+
+        c = self.collector()
+        inserted = c.poll_history()
+        self.assertEqual(len(self.history_calls()), 3)
+        self.assertGreater(newest2, cursor)
+        self.assertEqual(self.db.get_meta(CURSOR_KEY), str(NOW_MS - 1000))
+        self.assertGreater(inserted, 0)
+        self.assertIsNone(self.db.get_meta("history_stalled_since_ms"))
+
+    def test_stalled_cursor_is_flagged_and_warned_after_an_hour(self):
+        from stcollector import collector as collector_module
+
+        cursor = NOW_MS - 2 * 3600_000
+        self.db.set_meta(CURSOR_KEY, cursor)
+        for d in ("t1", "m1"):
+            self.db.set_cursor(d, cursor)
+        self.fake.add("locations:history", [])  # 매 주기 아무것도 진전 없음
+        now = [NOW]
+        cfg = self.cfg()
+        client = SmartThingsCliClient(cfg, runner=self.fake, clock=lambda: now[0])
+        c = Collector(cfg, client, self.db, clock=lambda: now[0])
+        c.refresh_devices()
+
+        c.poll_history()
+        self.assertEqual(self.db.get_meta("history_stalled_since_ms"), str(NOW_MS))
+        now[0] += 1800
+        with self.assertNoLogs("stcollector.collector", "WARNING"):
+            c.poll_history()
+        now[0] += collector_module.HISTORY_STALL_WARN_MS / 1000
+        with self.assertLogs("stcollector.collector", "WARNING") as logs:
+            c.poll_history()
+        self.assertIn("정체", logs.output[0])
+        now[0] += 300
+        with self.assertNoLogs("stcollector.collector", "WARNING"):
+            c.poll_history()  # 경고는 1시간에 한 번
+
+        self.fake.routes["locations:history"] = [[ev(int(now[0] * 1000) - 1000)]]
+        c.poll_history()
+        self.assertIsNone(self.db.get_meta("history_stalled_since_ms"))
 
     def test_stop_during_walk_keeps_position_and_makes_no_more_calls(self):
         c = self.collector(history_page_limit=2)

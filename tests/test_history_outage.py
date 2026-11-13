@@ -67,7 +67,7 @@ class OutageTestBase(CliTestBase):
 
     def collector(self, **overrides):
         cfg = self.cfg(mode="history", **overrides)
-        client = SmartThingsCliClient(cfg, runner=self.fake, sleep=self.advance)
+        client = SmartThingsCliClient(cfg, runner=self.fake, sleep=self.advance, clock=lambda: self.now)
         return Collector(cfg, client, self.db, clock=lambda: self.now)
 
 
@@ -100,7 +100,9 @@ class RunLoopOutageTest(OutageTestBase):
         failure_waits = waits[:-1]
         self.assertEqual(failure_waits, [30.0, 60.0, 120.0, 240.0, 300.0])
         self.assertLessEqual(max(failure_waits), c.cfg.history_interval_s)
-        self.assertEqual(len(self.fake.named("locations:history")), 11)
+        # 실패 10회 + 회복 1회 + 확인 1회. 회복 페이지가 짧지만 최신 이벤트가 가짜 시계보다 5분 넘게
+        # 오래돼서, CLI가 걸러 낸 경우(2026-11-13 정체)와 구별하려고 한 번 더 읽는다.
+        self.assertEqual(len(self.fake.named("locations:history")), 12)
         # 회복 뒤 상태가 정리되고 이력이 저장된다
         self.assertEqual(self.db.get_meta(CURSOR_KEY), str(NOW_MS - 1000))
         self.assertIsNone(self.db.get_meta("history_fail_since_ms"))
