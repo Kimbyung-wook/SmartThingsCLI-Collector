@@ -29,7 +29,6 @@ local capTemp = capabilities[NS .. ".cpuTemperature"]
 local capClock = capabilities[NS .. ".cpuClock"]
 local capCpu = capabilities[NS .. ".cpuUsage"]
 local capDisk = capabilities[NS .. ".diskUsage"]
-local capUpdate = capabilities[NS .. ".updateNow"]  -- 기기 타일의 "지금 최신화" 버튼 (명령만 있고 속성은 없음)
 
 local DEVICE_NETWORK_ID = "stcollector-rpi-status"
 local PROFILE = "stcollector-rpi.v1"
@@ -47,7 +46,7 @@ local CLOCK_STEP_MHZ = 1       -- CPU 클럭 MHz
 -- 마지막 수집 시각: 수집이 정상인 동안은 보내지 않는다. 정상이 아니게 되면 바로 보내고,
 -- 이상이 이어지는 동안 바뀔 때마다 보내고, 정상으로 돌아오면 한 번 보낸다.
 
--- 새로고침(아래로 당기기, refresh 명령)과 타일 버튼(updateNow.update)은 위 기준을 무시하고 모든 값을 보낸다.
+-- 새로고침(상세 화면을 아래로 당기기, refresh 명령)은 위 기준을 무시하고 모든 값을 보낸다.
 -- 이 간격 안에 다시 누르면 RPi 를 다시 읽지 않는다.
 local FORCE_MIN_INTERVAL_S = 5
 
@@ -162,7 +161,7 @@ local function poll(device, force)
   end
   local data, err = fetch(addr)
   if not data and force then
-    -- 최신화 요청의 실패는 실패 횟수에 넣지 않는다. 몇 번 연달아 눌렀다고 알림(열림)이 앞당겨지지 않게,
+    -- 최신화 요청의 실패는 실패 횟수에 넣지 않는다. 몇 번 연달아 당겼다고 알림(열림)이 앞당겨지지 않게,
     -- 알림 판단은 주기 읽기에만 맡긴다.
     log.warn("최신화 요청: RPi 상태 읽기 실패: " .. tostring(err))
     return
@@ -196,7 +195,7 @@ local function poll(device, force)
     function(v) return capDisk.diskUsage({ value = v, unit = "%" }) end, nil, force)
 end
 
--- 새로고침·타일 버튼. RPi 를 읽기만 하고, RPi 나 다른 기기를 제어하지 않는다.
+-- 새로고침. RPi 를 읽기만 하고, RPi 나 다른 기기를 제어하지 않는다.
 local function force_update(device)
   local now = os.time()
   local last = device:get_field("force_at")
@@ -248,10 +247,6 @@ local function handle_refresh(driver, device)
   force_update(device)
 end
 
-local function handle_update_now(driver, device)
-  force_update(device)
-end
-
 -- 앱의 "주변 기기 검색"에서 호출된다. 이미 있으면 아무것도 하지 않는다.
 local function discovery(driver, _, should_continue)
   for _, d in ipairs(driver:get_devices()) do
@@ -285,9 +280,6 @@ local driver = Driver("stcollector-rpi-status", {
   capability_handlers = {
     [capabilities.refresh.ID] = {
       [capabilities.refresh.commands.refresh.NAME] = handle_refresh,
-    },
-    [capUpdate.ID] = {
-      [capUpdate.commands.update.NAME] = handle_update_now,
     },
   },
 })

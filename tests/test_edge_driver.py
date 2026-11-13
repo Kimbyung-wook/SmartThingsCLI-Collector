@@ -22,14 +22,10 @@ class EdgeDriverFilesTests(unittest.TestCase):
     def setUp(self):
         self.lua = (ROOT / "src" / "init.lua").read_text("utf-8")
         self.profile = (ROOT / "profiles" / "stcollector-rpi.yml").read_text("utf-8")
-        self.caps = {}  # 값을 보여 주는 capability (속성 하나)
+        self.caps = {}
         for path in sorted((ROOT / "capabilities").glob("*.json")):
             if not path.name.endswith(".presentation.json"):
-                cap = json.loads(path.read_text("utf-8"))
-                if cap["attributes"]:
-                    self.caps[path] = cap
-                else:
-                    self.button_path, self.button = path, cap
+                self.caps[path] = json.loads(path.read_text("utf-8"))
 
     def test_camel_rule_matches_user_test(self):
         self.assertEqual(camel("CPU Clock Test"), "cpuClockTest")
@@ -107,32 +103,17 @@ class EdgeDriverFilesTests(unittest.TestCase):
         self.assertIn("update_last_collect(device, data.collect_ok == true", self.lua)
         self.assertIn("update_last_collect(device, false, nil)", self.lua)
 
-    def test_update_now_button_capability(self):
-        self.assertEqual(self.button_path.name, "update-now.json")
-        cap_id = camel(self.button["name"])
-        self.assertEqual(cap_id, "updateNow")
-        self.assertEqual(self.button["attributes"], {})
-        self.assertEqual(set(self.button["commands"]), {"update"})
-        self.assertEqual(self.button["commands"]["update"]["arguments"], [])
-        pres = json.loads((ROOT / "capabilities" / "update-now.presentation.json").read_text("utf-8"))
-        self.assertEqual(pres["id"], f"{NS}.{cap_id}")
-        (action,) = pres["dashboard"]["actions"]
-        self.assertEqual(action, {"displayType": "pushButton", "pushButton": {"command": "update"}})
-        self.assertEqual(pres["dashboard"]["states"], [])
-        self.assertEqual(pres["detailView"][0]["pushButton"]["command"], "update")
-        for tag, label in (("en", "Update Now"), ("ko", "지금 최신화")):
-            tr = json.loads((ROOT / "capabilities" / "i18n" / f"update-now.{tag}.json").read_text("utf-8"))
-            self.assertEqual((tr["tag"], tr["label"]), (tag, label))
-            self.assertIn("update", tr["commands"])
-        # 타일 상태가 지금처럼 열림/닫힘이 되도록 contactSensor 가 맨 앞, 버튼은 그다음
+    def test_no_update_now_button(self):
+        # 타일의 "지금 최신화" 버튼은 앱에서 동작하지 않아 없앴다. 새로고침(refresh)만 남긴다.
+        self.assertFalse(list((ROOT / "capabilities").rglob("update-now*")))
+        self.assertNotIn("updateNow", self.profile)
+        self.assertNotIn("updateNow", self.lua)
+        self.assertNotIn("handle_update_now", self.lua)
         ids = re.findall(r"^      - id: (\S+)$", self.profile, re.M)
-        self.assertEqual(ids[:2], ["contactSensor", f"{NS}.updateNow"])
-        self.assertIn(f'capabilities[NS .. ".{cap_id}"]', self.lua)
-        self.assertIn("[capUpdate.commands.update.NAME] = handle_update_now", self.lua)
+        self.assertEqual((ids[0], ids[-1]), ("contactSensor", "refresh"))
 
-    def test_refresh_and_button_force_all_values(self):
+    def test_refresh_forces_all_values(self):
         self.assertRegex(self.lua, r"local function handle_refresh\(driver, device\)\n  force_update\(device\)")
-        self.assertRegex(self.lua, r"local function handle_update_now\(driver, device\)\n  force_update\(device\)")
         self.assertIn("poll(device, true)", self.lua)
         # 주기 읽기는 force 없이
         self.assertIn("call_on_schedule(interval, function() poll(device) end", self.lua)

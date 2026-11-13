@@ -1,9 +1,0 @@
-{
-  "tag": "en",
-  "label": "Update Now",
-  "commands": {
-    "update": {
-      "label": "Update all values now"
-    }
-  }
-}
