@@ -131,13 +131,31 @@ class Collector:
 
     # ---- 기기 -------------------------------------------------------------
     def resolve_location(self) -> str:
+        """수집할 위치. 설정값이 먼저이고, 비어 있으면 지난번에 수집한 위치(meta)를 이어서 쓴다.
+
+        계정에 위치가 새로 늘어도(공유받은 집 등) 수집이 멈추지 않게 한다. 지난번 위치가 계정에서
+        사라졌으면 남은 위치로 몰래 바꾸지 않고 설정 오류로 멈춘다 (다른 집 데이터가 섞이지 않게).
+        """
         if self.location_id:
+            if self.db.get_meta("location_id") != self.location_id:
+                self.db.set_meta("location_id", self.location_id)
             return self.location_id
         locations = self.client.locations()
+        ids = [l.get("locationId") for l in locations]
+        choices = ", ".join(f"{l.get('name')}={l.get('locationId')}" for l in locations)
+        saved = self.db.get_meta("location_id")
+        if saved:
+            if saved not in ids:
+                raise ConfigError(f"지난번에 수집한 위치({saved})가 계정에 없습니다. "
+                                  f"설정의 location_id 를 지정하세요: {choices}")
+            if len(ids) > 1:
+                log.warning("위치가 %d개라 지난번에 수집한 위치를 이어서 씁니다 (%s). "
+                            "설정에 location_id 를 지정하면 이 경고가 사라집니다: %s", len(ids), saved, choices)
+            self.location_id = saved
+            return saved
         if len(locations) != 1:
-            choices = ", ".join(f"{l.get('name')}={l.get('locationId')}" for l in locations)
             raise ConfigError(f"위치가 {len(locations)}개입니다. 설정의 location_id 를 지정하세요: {choices}")
-        self.location_id = locations[0]["locationId"]
+        self.location_id = ids[0]
         self.db.set_meta("location_id", self.location_id)
         return self.location_id
 

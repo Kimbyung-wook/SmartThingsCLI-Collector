@@ -3,6 +3,7 @@ import unittest
 
 from stcollector.auth import Authenticator, TokenStore
 from stcollector.client import SmartThingsClient
+from stcollector.config import ConfigError
 from stcollector.collector import (
     DAY_MS, Collector, history_item_to_row, split_value, status_to_rows,
 )
@@ -165,6 +166,54 @@ class IntervalReportTest(TempDirMixin, unittest.TestCase):
         self.assertEqual(rep[0]["median_s"], 60)
         self.assertEqual(rep[0]["max_s"], 420)
         db.close()
+
+
+class _Locations:
+    def __init__(self, *ids):
+        self.ids = ids
+
+    def locations(self):
+        return [{"locationId": i, "name": "시험 위치 " + i[-1]} for i in self.ids]
+
+
+class ResolveLocationTest(TempDirMixin, unittest.TestCase):
+    """위치가 늘어도 지난번 위치로 이어서 수집하고, 지난번 위치가 없어졌으면 다른 위치로 바꾸지 않는다."""
+
+    def setUp(self):
+        super().setUp()
+        self.db = Database(self.tmp / "sensors.db")
+
+    def tearDown(self):
+        self.db.close()
+        super().tearDown()
+
+    def resolve(self, *ids, configured=None):
+        cfg = make_config(self.tmp, location_id=configured)
+        return Collector(cfg, _Locations(*ids), self.db, clock=lambda: NOW).resolve_location()
+
+    def test_single_location_is_saved(self):
+        self.assertEqual(self.resolve("loc-1"), "loc-1")
+        self.assertEqual(self.db.get_meta("location_id"), "loc-1")
+
+    def test_new_location_keeps_saved_one(self):
+        self.resolve("loc-1")
+        with self.assertLogs("stcollector.collector", "WARNING"):
+            self.assertEqual(self.resolve("loc-2", "loc-1"), "loc-1")
+
+    def test_many_locations_without_saved_is_error(self):
+        with self.assertRaises(ConfigError):
+            self.resolve("loc-1", "loc-2")
+
+    def test_saved_location_gone_is_error(self):
+        self.resolve("loc-1")
+        with self.assertRaises(ConfigError):
+            self.resolve("loc-2")
+        self.assertEqual(self.db.get_meta("location_id"), "loc-1")
+
+    def test_configured_location_wins_and_is_saved(self):
+        self.resolve("loc-1")
+        self.assertEqual(self.resolve("loc-1", "loc-2", configured="loc-2"), "loc-2")
+        self.assertEqual(self.db.get_meta("location_id"), "loc-2")
 
 
 if __name__ == "__main__":
