@@ -214,5 +214,81 @@ class SystemChunkTests(TempDirMixin, unittest.TestCase):
             self.get(period="24h", end="soon")
 
 
+class SystemRefTempTests(TempDirMixin, unittest.TestCase):
+    """상태 탭 비교 온도: ref=온도 센서 id 이면 CPU 온도와 같은 구간에 실내 온도를 붙인다."""
+
+    def setUp(self):
+        super().setUp()
+        self.db_path = self.tmp / "sensors.db"
+        db = Database(self.db_path)
+        db.upsert_devices([
+            {"device_id": "dev-t", "label": "시험 온도", "name": "x", "room_id": "r1", "room_name": "시험 방",
+             "location_id": "loc-test", "capabilities": {"temperatureMeasurement"}},
+            {"device_id": "dev-f", "label": "화씨 온도", "name": "x", "room_id": "r2", "room_name": "다른 방",
+             "location_id": "loc-test", "capabilities": {"temperatureMeasurement"}},
+        ])
+        self.hour = NOW - NOW % H  # 진행 중인 시간의 시작 (30분 전)
+        cap = ("main", "temperatureMeasurement", "temperature")
+        db.insert_readings([
+            ("dev-t", *cap, self.hour - 10 * 60_000, 20.0, None, "C", "history", None),
+            ("dev-t", *cap, self.hour + 10 * 60_000, 22.0, None, "C", "history", None),
+            ("dev-f", *cap, self.hour, 68.0, None, "F", "history", None),
+        ])
+        db.conn.executemany("INSERT OR IGNORE INTO rollup_series(device_id, component, capability, attribute, unit) "
+                            "VALUES (?,?,?,?,?)", [("dev-t", *cap, "C"), ("dev-f", *cap, "F")])
+        db.conn.commit()
+        db.close()
+        self.conn = sqlite3.connect(self.db_path)
+        self.ctx = self.context(NOW)
+
+    def tearDown(self):
+        self.conn.close()
+        super().tearDown()
+
+    def context(self, now):
+        return api.Context(self.conn, now, self.db_path, sysmon_db_path(self.db_path), self.tmp / "none.json")
+
+    def get(self, **params):
+        return api.system(self.ctx, {k: str(v) for k, v in params.items()})
+
+    def test_without_ref_no_series(self):
+        d = self.get(period="1h")
+        self.assertNotIn("ref_temp", d["series"])
+        self.assertIsNone(d["ref"])
+
+    def test_ref_values_follow_buckets(self):
+        d = self.get(period="1h", ref="dev-t")
+        q = d["series"]
+        self.assertEqual(len(q["ref_temp"]), len(q["buckets"]))
+        at = dict(zip(q["buckets"], q["ref_temp"]))
+        self.assertEqual(at[self.hour + 5 * 60_000], 20.0)
+        self.assertEqual(at[self.hour + 15 * 60_000], 22.0)
+        self.assertEqual(d["ref"]["temp_c"], 22.0)
+        self.assertEqual(d["ref"]["name"], "시험 방")
+
+    def test_bucket_with_change_is_time_weighted(self):
+        q = self.get(period="24h", ref="dev-t")["series"]
+        at = dict(zip(q["buckets"], q["ref_temp"]))
+        self.assertEqual(at[self.hour + 5 * 60_000], 20.0)
+        self.assertEqual(at[self.hour + 10 * 60_000], 22.0)
+        self.assertIsNone(at[self.hour - 3 * H])  # 첫 보고 전
+
+    def test_value_expires_after_hold(self):
+        self.ctx = self.context(self.hour + 4 * H)  # 마지막 보고에서 2시간(유지 한도)이 넘게 지남
+        d = self.get(period="24h", ref="dev-t")
+        self.assertIsNone(d["series"]["ref_temp"][-1])
+        self.assertIsNone(d["ref"]["temp_c"])
+
+    def test_fahrenheit_converted(self):
+        d = self.get(period="1h", ref="dev-f")
+        self.assertEqual(d["ref"]["temp_c"], 20.0)
+
+    def test_bad_ref(self):
+        with self.assertRaises(api.BadRequest):
+            self.get(period="1h", ref="dev-unknown")
+        with self.assertRaises(api.BadRequest):
+            self.get(period="1h", ref="bad id!")
+
+
 if __name__ == "__main__":
     unittest.main()

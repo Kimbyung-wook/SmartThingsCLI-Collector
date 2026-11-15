@@ -91,6 +91,14 @@
   }
   let layout = loadLayout();
 
+  // 상태 탭에서 CPU 온도와 견줄 온도 센서 (RPi 가 놓인 방). 브라우저별로 저장한다.
+  const REF_KEY = 'refTemp';
+  let refTemp = '';
+  try { refTemp = localStorage.getItem(REF_KEY) || ''; } catch (e) { /* 저장 불가 환경 */ }
+  const refSensors = () => (meta && meta.sensors && meta.sensors.temperature) || [];
+  const refSensor = () => refSensors().find(x => x.id === refTemp) || null;  // 센서가 없어졌으면 비교 안 함
+  const sysParams = p => { const r = refSensor(); return r ? { ...p, ref: r.id } : p; };
+
   function seg(key, options, label) {
     return h('div', { class: 'seg', role: 'group', 'aria-label': label },
       options.map(([v, t]) => h('button', { type: 'button', 'aria-pressed': String(S[key] === v), text: t,
@@ -506,10 +514,10 @@
     return { start: q.buckets[0], end: s.end, data: { ...q, xend: s.end, bucket_ms: b }, hasOlder: s.has_older,
       oldest: s.oldest_ms == null ? null : s.oldest_ms - s.oldest_ms % b };
   }
-  const SYS_KEYS = ['buckets', 'temp_avg', 'temp_min', 'temp_max', 'freq', 'load', 'cpu', 'undervolt_s', 'overheat_s', 'coverage'];
+  const SYS_KEYS = ['buckets', 'temp_avg', 'temp_min', 'temp_max', 'freq', 'load', 'cpu', 'undervolt_s', 'overheat_s', 'coverage', 'ref_temp'];
   function mergeSystem(list) {
     const out = { xend: list[list.length - 1].xend, bucket_ms: list[0].bucket_ms, cpu_cores: {} };
-    SYS_KEYS.forEach(k => { out[k] = [].concat(...list.map(q => q[k])); });
+    SYS_KEYS.forEach(k => { out[k] = [].concat(...list.map(q => q[k] || q.buckets.map(() => null))); });
     const cores = new Set();
     list.forEach(q => Object.keys(q.cpu_cores || {}).forEach(c => cores.add(c)));
     cores.forEach(c => { out.cpu_cores[c] = [].concat(...list.map(q => (q.cpu_cores || {})[c] || q.buckets.map(() => null))); });
@@ -532,6 +540,8 @@
       const uptime = c.uptime_s == null ? '—' : duration(c.uptime_s);
       head.append(h('div', { class: 'stats' },
         stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
+        sys.ref && stat(sys.ref.name + ' 온도', sys.ref.temp_c != null ? fmt(sys.ref.temp_c, 1) + ' °C' : '—',
+          sys.ref.temp_c != null && c.temp_c != null ? 'CPU와 차이 ' + fmt(c.temp_c - sys.ref.temp_c, 1) + ' °C' : '최근 보고 없음'),
         stat('CPU 클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
         stat('CPU Load (1분)', loadPct(c.load1)),
         stat('여유 메모리', c.mem_avail_mb != null ? fmt(c.mem_avail_mb) + ' MB' : '—', c.mem_total_mb ? '전체 ' + fmt(c.mem_total_mb) + ' MB' : null),
@@ -559,7 +569,7 @@
     if (q.temp_avg.some(v => v != null)) {
       const g = Charts.pan({
         view: sys.view_ms, first: sysChunk(sys), range: rangeText(true),
-        load: end => api('/api/system', withEnd({ period }, end)).then(sysChunk), merge: mergeSystem,
+        load: end => api('/api/system', withEnd(sysParams({ period }), end)).then(sysChunk), merge: mergeSystem,
       });
       later(() => g.start());
       charts.append(g.bar);
@@ -584,8 +594,17 @@
       };
       const loadOf = m => m.load.map(loadToPct);
       if (key) charts.append(key);
+      const ref = sys.ref, refColor = ref ? ((refSensors().find(x => x.id === ref.id) || {}).color ?? null) : null;
+      const diffOf = m => m.temp_avg.map((v, i) => (v != null && m.ref_temp[i] != null ? v - m.ref_temp[i] : null));
+      const tempChart = ref
+        ? chart('CPU 온도', null, null, { min: true, unit: '°C', digits: 1, sub: ref.name + ' 온도와 함께',
+          legend: h('div', { class: 'legend' }, legendLine(color('ink'), 'CPU'), legendLine(color(refColor), ref.name)),
+          series: m => [{ name: 'CPU', color: 'ink', avg: m.temp_avg, coverage: m.coverage, min: m.temp_min, max: m.temp_max },
+            { name: ref.name, color: refColor, avg: m.ref_temp, coverage: null, min: null, max: null }] })
+        : chart('CPU 온도', '온도', m => m.temp_avg, { min: true, unit: '°C', digits: 1, sub: '설정에서 비교할 방 온도를 고르면 함께 표시' });
+      out.push(tempChart);
+      if (ref) out.push(chart('CPU와 ' + ref.name + ' 온도 차', '온도 차', diffOf, { unit: '°C', digits: 1, sub: 'CPU 온도 − ' + ref.name + ' 온도' }));
       out.push(
-        chart('CPU 온도', '온도', m => m.temp_avg, { min: true, unit: '°C', digits: 1 }),
         chart('CPU 클럭', 'CPU 클럭', m => m.freq, { unit: 'MHz', digits: 0 }),
         chart('CPU Load', 'CPU Load', loadOf, { unit: '%', digits: 0, sub: '100% 초과는 CPU를 기다리는 작업이 있다는 뜻',
           domain: m => [0, Math.max(100, ...loadOf(m).filter(v => v != null))] }));
@@ -602,9 +621,11 @@
       }
       out.push(tableView(() => {  // 지금 보이는 구간만
         const m = g.merged, load = loadOf(m);
-        return table(['시각', '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
+        const refCols = ref ? [ref.name + ' °C'] : [];
+        return table(['시각', '온도 °C', ...refCols, 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
           visibleIndex(m.buckets, m.xend, g).filter(i => m.coverage[i] != null)
-            .map(i => [stamp(m.buckets[i]), fmt(m.temp_avg[i], 1), fmt(m.freq[i]), fmt(load[i]), fmt(m.cpu[i], 1), m.undervolt_s[i]]), i => i > 0);
+            .map(i => [stamp(m.buckets[i]), fmt(m.temp_avg[i], 1), ...(ref ? [fmt(m.ref_temp[i], 1)] : []),
+              fmt(m.freq[i]), fmt(load[i]), fmt(m.cpu[i], 1), m.undervolt_s[i]]), i => i > 0);
       }, true));
     } else {
       charts.append(empty('이 기간 기록 없음', '모니터가 기록을 남기면 표시'));
@@ -615,7 +636,7 @@
     return out;
   }
   async function vStatus() {
-    const [d, sys] = await Promise.all([api('/api/status'), api('/api/system', { period: S.sysPeriod }).catch(e => { if (e.message === 'login') throw e; return null; })]);
+    const [d, sys] = await Promise.all([api('/api/status'), api('/api/system', sysParams({ period: S.sysPeriod })).catch(e => { if (e.message === 'login') throw e; return null; })]);
     const token = d.auth_state === 'reauth_required' ? statusPill('재인증 필요', 'bad')
       : d.auth_state === 'ok' ? statusPill('정상', 'on') : '수집 시작 전';
     const rows = [
@@ -702,7 +723,7 @@
 
   // ---- 설정 창 --------------------------------------------------------------------
   const dialog = $('settings-dialog');
-  let dirtyTheme = false, dirtyLayout = false;
+  let dirtyTheme = false, dirtyLayout = false, dirtyRef = false;
   function changeLayout(next, focus) {
     layout = next;
     dirtyLayout = true;
@@ -743,6 +764,17 @@
             renderSettings();
           } })))),
       h('div', { class: 'sec' },
+        h('h3', { text: '상태 탭 비교 온도' }),
+        h('p', { class: 'sub', text: 'RPi가 놓인 곳의 온도를 CPU 온도와 함께 봅니다. 이 브라우저에만 저장됩니다.' }),
+        h('select', { 'aria-label': '비교 온도 센서',
+          onchange: e => {
+            refTemp = e.target.value;
+            dirtyRef = true;
+            try { localStorage.setItem(REF_KEY, refTemp); } catch (err) { /* 무시 */ }
+          } },
+          h('option', { value: '', text: '표시 안 함', selected: refSensor() ? null : '' }),
+          refSensors().map(x => h('option', { value: x.id, text: x.name, selected: x.id === refTemp ? '' : null })))),
+      h('div', { class: 'sec' },
         h('h3', { text: '요약 탭 항목' }),
         h('p', { class: 'sub', text: '위에서부터 이 순서로 표시합니다. 이 브라우저에만 저장됩니다.' }),
         h('ol', { class: 'layout-list' }, layout.map(layoutRow))),
@@ -758,8 +790,8 @@
   $('settings').addEventListener('click', () => { renderSettings(); dialog.showModal(); });
   // 닫을 때 한 번만 다시 그린다 (RPi API 호출 수 절약). Esc는 close 이벤트로 들어온다.
   function applySettings() {
-    if (dirtyTheme || (dirtyLayout && S.tab === 'summary')) render();
-    dirtyTheme = dirtyLayout = false;
+    if (dirtyTheme || (dirtyLayout && S.tab === 'summary') || (dirtyRef && S.tab === 'status')) render();
+    dirtyTheme = dirtyLayout = dirtyRef = false;
   }
   function closeSettings() { dialog.close(); applySettings(); }
   dialog.addEventListener('click', e => { if (e.target === dialog) closeSettings(); });

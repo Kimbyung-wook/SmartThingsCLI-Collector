@@ -20,8 +20,9 @@ from .. import __version__
 from pathlib import Path
 
 from ..rollup import (
-    DAY_MS, HOUR_MS, KST_OFFSET_MS, LUX_LABELS, WEEK_MS, floor_hour, kst_day_start, kst_week_start,
+    DAY_MS, HOUR_MS, KST_OFFSET_MS, LUX_LABELS, WEEK_MS, floor_hour, iter_segments, kst_day_start, kst_week_start,
 )
+from ..settings import RollupSettings
 
 ROLLUP_TABLES = {"hour": "rollup_hour", "day": "rollup_day", "week": "rollup_week"}
 TREND_PERIODS = {"24h": ("hour", 24), "month": ("day", 30), "year": ("week", 52)}  # (단위, 한 화면 구간 수)
@@ -805,6 +806,47 @@ def _sysmon_grid(period: str, start: int, end: int, minute_from: int | None,
     return hourly + list(range(split, end, bucket_ms)), split
 
 
+def _ref_series(ctx: Context, params: dict) -> Series | None:
+    """상태 탭에서 CPU 온도와 견줄 온도 센서 (ref=기기 id). 없으면 None."""
+    raw = params.get("ref")
+    if not raw:
+        return None
+    if not _DEVICE_RE.match(raw):
+        raise BadRequest("ref 값이 올바르지 않습니다")
+    for s in ctx.index.get("temperature", []):
+        if s.device_id == raw:
+            return s
+    raise BadRequest("알 수 없는 ref 입니다")
+
+
+def _ref_values(ctx: Context, s: Series, buckets: list[int], end: int) -> list[float | None]:
+    """구간마다 비교 온도의 시간 가중 평균 (°C). 센서는 바뀔 때만 보고하므로 값을 유지 시간만큼 이어 본다."""
+    count = len(buckets)
+    if not count:
+        return []
+    ends = buckets[1:] + [end]
+    weight, total = [0] * count, [0.0] * count
+    hold = RollupSettings().hold_ms("temperature")
+    for a, b, value, _ in iter_segments(ctx.conn, s, buckets[0], end, hold):
+        i = max(0, bisect_right(buckets, a) - 1)
+        while i < count and buckets[i] < b:
+            lo, hi = max(a, buckets[i]), min(b, ends[i])
+            if hi > lo:
+                weight[i] += hi - lo
+                total[i] += value * (hi - lo)
+            i += 1
+    return [_r(_to_celsius(t / w, s.unit), 1) if w else None for t, w in zip(total, weight)]
+
+
+def _ref_current(ctx: Context, s: Series) -> dict:
+    row = ctx.latest(s)
+    hold = RollupSettings().hold_ms("temperature")
+    temp = None
+    if row is not None and row[1] is not None and ctx.now_ms - row[0] <= hold:
+        temp = _r(_to_celsius(row[1], s.unit), 1)
+    return {"id": s.device_id, "name": s.place, "temp_c": temp, "ts_ms": row[0] if row else None}
+
+
 def system(ctx: Context, params: dict) -> dict:
     now = ctx.now_ms
     period = _choice(params, "period", SYSMON_PERIODS, "24h")
@@ -814,6 +856,7 @@ def system(ctx: Context, params: dict) -> dict:
     asked = _end_param(params)
     end = latest if asked is None else min(latest, asked - asked % bucket_ms)
     start = end - SYSMON_CHUNKS[period]
+    ref = _ref_series(ctx, params)
     current = _sysmon_current(ctx)
     data = _sysmon_rows(ctx, start, end, period == "24h")
     has_db = data is not None
@@ -873,6 +916,8 @@ def system(ctx: Context, params: dict) -> dict:
         "coverage": [_r(min(1.0, sum(r[10] for r in rows) * 60000 / (e - b)), 2) if rows else None
                      for rows, b, e in zip(groups, buckets, ends)],
     }
+    if ref is not None:
+        series["ref_temp"] = _ref_values(ctx, ref, buckets, end)
     events = data["events"]
 
     out_events = []
@@ -897,7 +942,8 @@ def system(ctx: Context, params: dict) -> dict:
             "period": period, "bucket_ms": bucket_ms, "view_ms": SYSMON_PERIODS[period][0] * SYSMON_PERIODS[period][1],
             "end": end, "hourly_until": split, "oldest_ms": oldest_ms,
             "has_older": oldest_ms is not None and oldest_ms < buckets[0],
-            "series": series, "events": out_events}
+            "series": series, "events": out_events,
+            "ref": _ref_current(ctx, ref) if ref is not None else None}
 
 
 def meta(ctx: Context, params: dict) -> dict:
