@@ -540,7 +540,7 @@
       const uptime = c.uptime_s == null ? '—' : duration(c.uptime_s);
       head.append(h('div', { class: 'stats' },
         sys.ref
-          ? stat('CPU 온도 / ' + sys.ref.name, (c.temp_c != null ? fmt(c.temp_c, 1) : '—') + ' / ' + (sys.ref.temp_c != null ? fmt(sys.ref.temp_c, 1) : '—') + ' °C',
+          ? stat('CPU 온도 (' + sys.ref.name + ')', fmt(c.temp_c, 1) + ' (' + fmt(sys.ref.temp_c, 1) + ') °C',
             sys.ref.temp_c == null ? sys.ref.name + ' 최근 보고 없음' : null)
           : stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
         stat('CPU 클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
@@ -619,9 +619,9 @@
       }
       out.push(tableView(() => {  // 지금 보이는 구간만
         const m = g.merged, load = loadOf(m);
-        return table(['시각', ref ? 'CPU / ' + ref.name + ' °C' : '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
+        return table(['시각', ref ? '온도 °C (' + ref.name + ')' : '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
           visibleIndex(m.buckets, m.xend, g).filter(i => m.coverage[i] != null)
-            .map(i => [stamp(m.buckets[i]), ref ? fmt(m.temp_avg[i], 1) + ' / ' + fmt(m.ref_temp[i], 1) : fmt(m.temp_avg[i], 1),
+            .map(i => [stamp(m.buckets[i]), ref ? fmt(m.temp_avg[i], 1) + ' (' + fmt(m.ref_temp[i], 1) + ')' : fmt(m.temp_avg[i], 1),
               fmt(m.freq[i]), fmt(load[i]), fmt(m.cpu[i], 1), m.undervolt_s[i]]), i => i > 0);
       }, true));
     } else {
