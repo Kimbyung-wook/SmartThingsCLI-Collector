@@ -539,9 +539,10 @@
       const caps = c.capabilities || {};
       const uptime = c.uptime_s == null ? '—' : duration(c.uptime_s);
       head.append(h('div', { class: 'stats' },
-        stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
-        sys.ref && stat(sys.ref.name + ' 온도', sys.ref.temp_c != null ? fmt(sys.ref.temp_c, 1) + ' °C' : '—',
-          sys.ref.temp_c != null && c.temp_c != null ? 'CPU와 차이 ' + fmt(c.temp_c - sys.ref.temp_c, 1) + ' °C' : '최근 보고 없음'),
+        sys.ref
+          ? stat('CPU 온도 / ' + sys.ref.name, (c.temp_c != null ? fmt(c.temp_c, 1) : '—') + ' / ' + (sys.ref.temp_c != null ? fmt(sys.ref.temp_c, 1) : '—') + ' °C',
+            sys.ref.temp_c == null ? sys.ref.name + ' 최근 보고 없음' : null)
+          : stat('CPU 온도', c.temp_c != null ? fmt(c.temp_c, 1) + ' °C' : '—'),
         stat('CPU 클럭', c.freq_mhz != null ? fmt(c.freq_mhz) + ' MHz' : '—'),
         stat('CPU Load (1분)', loadPct(c.load1)),
         stat('여유 메모리', c.mem_avail_mb != null ? fmt(c.mem_avail_mb) + ' MB' : '—', c.mem_total_mb ? '전체 ' + fmt(c.mem_total_mb) + ' MB' : null),
@@ -595,16 +596,13 @@
       const loadOf = m => m.load.map(loadToPct);
       if (key) charts.append(key);
       const ref = sys.ref, refColor = ref ? ((refSensors().find(x => x.id === ref.id) || {}).color ?? null) : null;
-      const diffOf = m => m.temp_avg.map((v, i) => (v != null && m.ref_temp[i] != null ? v - m.ref_temp[i] : null));
       const tempChart = ref
         ? chart('CPU 온도', null, null, { min: true, unit: '°C', digits: 1, sub: ref.name + ' 온도와 함께',
           legend: h('div', { class: 'legend' }, legendLine(color('ink'), 'CPU'), legendLine(color(refColor), ref.name)),
           series: m => [{ name: 'CPU', color: 'ink', avg: m.temp_avg, coverage: m.coverage, min: m.temp_min, max: m.temp_max },
             { name: ref.name, color: refColor, avg: m.ref_temp, coverage: null, min: null, max: null }] })
         : chart('CPU 온도', '온도', m => m.temp_avg, { min: true, unit: '°C', digits: 1, sub: '설정에서 비교할 방 온도를 고르면 함께 표시' });
-      out.push(tempChart);
-      if (ref) out.push(chart('CPU와 ' + ref.name + ' 온도 차', '온도 차', diffOf, { unit: '°C', digits: 1, sub: 'CPU 온도 − ' + ref.name + ' 온도' }));
-      out.push(
+      out.push(tempChart,
         chart('CPU 클럭', 'CPU 클럭', m => m.freq, { unit: 'MHz', digits: 0 }),
         chart('CPU Load', 'CPU Load', loadOf, { unit: '%', digits: 0, sub: '100% 초과는 CPU를 기다리는 작업이 있다는 뜻',
           domain: m => [0, Math.max(100, ...loadOf(m).filter(v => v != null))] }));
@@ -621,10 +619,9 @@
       }
       out.push(tableView(() => {  // 지금 보이는 구간만
         const m = g.merged, load = loadOf(m);
-        const refCols = ref ? [ref.name + ' °C'] : [];
-        return table(['시각', '온도 °C', ...refCols, 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
+        return table(['시각', ref ? 'CPU / ' + ref.name + ' °C' : '온도 °C', 'CPU 클럭 MHz', 'CPU Load %', 'CPU 사용률 %', '전압 부족 초'],
           visibleIndex(m.buckets, m.xend, g).filter(i => m.coverage[i] != null)
-            .map(i => [stamp(m.buckets[i]), fmt(m.temp_avg[i], 1), ...(ref ? [fmt(m.ref_temp[i], 1)] : []),
+            .map(i => [stamp(m.buckets[i]), ref ? fmt(m.temp_avg[i], 1) + ' / ' + fmt(m.ref_temp[i], 1) : fmt(m.temp_avg[i], 1),
               fmt(m.freq[i]), fmt(load[i]), fmt(m.cpu[i], 1), m.undervolt_s[i]]), i => i > 0);
       }, true));
     } else {
