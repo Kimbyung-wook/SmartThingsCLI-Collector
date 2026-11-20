@@ -107,6 +107,13 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
 | `stcollector hash-password` | 대시보드 비밀번호 해시 생성 |
 | `stcollector auth` | OAuth 방식 승인. CLI 방식에서는 안내문만 출력 |
 
+### 수집 위치
+
+- 계정에 위치가 여러 개면 설정 `[smartthings]`의 `location_id`에 수집할 위치를 지정
+- 비워 두면 지난번에 수집한 위치를 이어 쓰고, 위치가 2개 이상인 동안 주기마다 경고 로그를 남김
+- 공유받은 위치가 계정에 생기는 것처럼 저장소 밖의 변화로도 위치 수가 바뀜
+- 규칙 전체: [ARCHITECTURE: 위치 선택](ARCHITECTURE.md#위치-선택-collectorresolve_location-020r3)
+
 ### 설정 바꾸기
 
 ```bash
@@ -140,7 +147,9 @@ sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 | CLI 호출 시간 초과 | 네트워크 확인, `cli_timeout_s`(기본 120초) 증가. 900MHz 1코어에서 1회 호출은 약 6초 |
 | `위치 이력 N페이지 한도에 도달` | 오래 멈춘 뒤 밀린 이벤트가 많은 경우. 나머지는 다음 주기에 이어서 수신. 더 빨리 받으려면 `history_max_pages` 증가 |
 | 이벤트 이력 API 403/404 | `mode = "auto"`면 상태 조회 방식으로 자동 전환. CLI 방식의 상태 조회는 `history_interval_s`보다 자주 읽지 않음 |
-| `위치가 N개입니다` | `stcollector check` 출력에 나온 ID를 설정의 `location_id`에 입력. 이 오류가 나면 수집 서비스는 30초마다 재시작 |
+| `위치가 N개입니다` | 처음 실행인데 계정에 위치가 여러 개인 경우. `stcollector check` 출력에 나온 ID를 설정의 `location_id`에 입력. 이 오류가 나면 수집 서비스는 30초마다 재시작 |
+| `위치가 N개라 지난번에 수집한 위치를 이어서 씁니다` (경고) | 계정에 위치가 늘었지만 수집은 계속됨. 설정에 `location_id`를 지정하면 경고가 사라짐 |
+| `지난번에 수집한 위치(...)가 계정에 없습니다` | 수집하던 위치가 계정에서 사라져 멈춤. 다른 위치로 자동으로 바꾸지 않음. 수집할 위치를 확인해 `location_id` 지정 |
 | `다른 수집기가 이미 실행 중입니다` | 수집기를 직접 실행했는데 서비스가 돌고 있거나, 수동 집계가 타이머와 겹친 경우. 집계에서도 같은 문구 출력. 잠시 뒤 재실행 |
 | `stcollector check`의 종료 코드 | 2는 설정 오류, 3은 인증 필요, 4는 API 오류 |
 
@@ -204,18 +213,20 @@ sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 
 ## RPi 미확인 항목
 
-- 기준: 2026-11-10 01:15 KST 배포 후
-- 배포로 확인된 항목
+- 기준: 2026-11-15 운영 확인 (0.2.0.r3). 2026-11-20에는 PC에서 SSH가 시간 초과로 접속되지 않아 이후 상태 미확인
+- 확인된 항목
   - `install.sh`, `migrate-cli-credentials.sh` 실제 실행
   - 서비스 샌드박스 안 CLI 동작 (기기 25개, 수집 방식 `history`)
   - PC에서 `http://<RPi IP>:8080` 응답
+  - 앱 기록 줄이기(R1) 재측정: 하루 약 1,700건에서 253건으로 감소 (2026-11-15, CLI 읽기로 셈)
 
 | 항목 | 확인 방법 |
 |---|---|
-| CLI 액세스 토큰 자동 갱신(만료 2026-11-11 00:06 KST), 리프레시 토큰 유효기간 | [README 확인 절차](../README.md#확인되지-않은-사항-cli-토큰-자동-갱신) |
+| CLI 액세스 토큰 자동 갱신(만료 2026-11-11 00:06 KST), 리프레시 토큰 유효기간. 만료 뒤에도 2026-11-15까지 RPi 수집이 이어짐. RPi 재로그인 기록은 없지만 수집 로그의 인증 오류를 보지 못해 판정은 미확인 | [README 확인 절차](../README.md#확인되지-않은-사항-cli-토큰-자동-갱신) |
 | 만료 시 재인증 출력 | 만료 뒤 `auth_state`와 `journalctl -u stcollector` |
 | 스마트폰 로그인 | 같은 공유기에 연결된 스마트폰에서 `http://<RPi IP>:8080` 접속 |
 | `smartthings logout` 동작 | 재로그인 때 확인 |
+| SmartThings 앱의 수집 이상 열림 알림 | 수집 이상이 생겼을 때 앱 알림 확인 |
 | CLI 자체 로그의 크기와 microSD 쓰기량 | 위 [디스크](#디스크) 명령 |
 | 실제 데이터로 본 대시보드와 첫 집계, RPi 응답 속도 | M2~M4 완료 기준 ([PLAN §11](../PLAN.md#11-단계별-진행)) |
 | 수집 부하까지 포함한 장시간 전압 상태 | `vcgencmd get_throttled` |

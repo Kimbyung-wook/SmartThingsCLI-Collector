@@ -11,7 +11,10 @@ cli_path = "/opt/stcollector-cli/smartthings"
 cli_home = "/var/lib/stcollector/cli"
 # CLI 호출 1회의 제한 시간(초)
 cli_timeout_s = 120
-# 비우면 위치가 1개일 때 자동 선택
+# 계정에 위치가 여러 개면 지정한다. 비우면:
+#   - 지난번에 수집한 위치를 이어서 쓴다 (위치가 늘어도 경고 로그만 남기고 계속 수집)
+#   - 그 위치가 계정에서 사라지면 다른 위치로 바꾸지 않고 설정 오류로 멈춘다
+#   - 처음 실행이면 위치가 1개일 때만 자동 선택한다
 location_id = ""
 
 # ---- backend = "oauth" 일 때만 사용 ----

@@ -27,14 +27,15 @@
 ## 현재 상태
 
 - 배포: 2026-11-10 01:15 KST 완료
-- 버전: 0.2.0 (2026-11-13). 변경 내역은 [CHANGELOG](../CHANGELOG.md)
+- 버전: 0.2.0.r3 (2026-11-15). 변경 내역은 [CHANGELOG](../CHANGELOG.md)
+- 운영 확인 기준일: 2026-11-15. 2026-11-20에는 PC에서 SSH가 시간 초과로 접속되지 않아 이후 상태 미확인
 - 활성화, 부팅 시 자동 시작: `stcollector`, `stcollector-web`, `stcollector-sysmon`, `stcollector-rollup.timer`
 - 수집 방식: `backend = "cli"`. OAuth는 유료 Developer Plan이 필요해 선택지로만 유지
 - CLI 실행 파일: `/opt/stcollector-cli/smartthings`
 - CLI 자격증명: `/var/lib/stcollector/cli/.local/share/@smartthings/cli/credentials.json` (서비스 계정 소유)
 - 전원 운영: QC5V + 15cm 케이블, 900MHz, 1코어
-- RPi에서 확인됨: 서비스 샌드박스 안 CLI 동작(기기 25개, 수집 방식 `history`), 설치·이전 스크립트 실행, PC에서 `http://<RPi IP>:8080` 응답
-- 아직 미확인: CLI 토큰 자동 갱신(액세스 토큰 만료 2026-11-11 00:06 KST), 실제 데이터로 본 대시보드와 첫 집계, 만료 시 재인증 출력, 스마트폰 로그인. 전체 목록은 [OPERATIONS: RPi 미확인 항목](OPERATIONS.md#rpi-미확인-항목)
+- RPi에서 확인됨: 서비스 샌드박스 안 CLI 동작(기기 25개, 수집 방식 `history`), 설치·이전 스크립트 실행, PC에서 `http://<RPi IP>:8080` 응답, 앱 기록 줄이기(R1) 재측정(하루 약 1,700건에서 253건)
+- 아직 미확인: CLI 토큰 자동 갱신(액세스 토큰 만료 2026-11-11 00:06 KST, 만료 뒤에도 2026-11-15까지 RPi 수집이 이어짐. RPi 재로그인 기록은 없지만 수집 로그의 인증 오류를 보지 못해 판정은 미확인), 앱의 수집 이상 열림 알림, 실제 데이터로 본 대시보드와 첫 집계, 만료 시 재인증 출력, 스마트폰 로그인. 전체 목록은 [OPERATIONS: RPi 미확인 항목](OPERATIONS.md#rpi-미확인-항목)
 - 진행 단계 기준: [PLAN §11](../PLAN.md#11-단계별-진행)
 - 자동 백업(M5): 미구현
 
