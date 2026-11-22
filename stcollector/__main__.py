@@ -1,4 +1,4 @@
-"""CLI: python -m stcollector --config <path> {auth,check,run,intervals,rollup,web,sysmon,hash-password}"""
+"""CLI: python -m stcollector --config <path> {auth,check,run,intervals,rollup,web,sysmon,netmon,hash-password}"""
 
 from __future__ import annotations
 
@@ -188,11 +188,11 @@ def cmd_rollup(cfg, args) -> int:
 
 
 def cmd_web(cfg, args) -> int:
-    from .settings import load_sysmon_settings, load_web_settings
+    from .settings import load_netmon_settings, load_sysmon_settings, load_web_settings
     from .web.server import serve
 
     return serve(cfg.db_path, load_web_settings(cfg.source_path),
-                 load_sysmon_settings(cfg.source_path).runtime_file)
+                 load_sysmon_settings(cfg.source_path).runtime_file, load_netmon_settings(cfg.source_path))
 
 
 def cmd_sysmon(cfg, args) -> int:
@@ -205,6 +205,18 @@ def cmd_sysmon(cfg, args) -> int:
         signal.signal(sig, lambda *_: stop.set())
     with _single_instance(sysmon_db_path(cfg.db_path)):
         return run_monitor(cfg.db_path, settings, stop)
+
+
+def cmd_netmon(cfg, args) -> int:
+    from .netmon import run_netmon
+    from .settings import load_netmon_settings, netmon_db_path
+
+    settings = load_netmon_settings(cfg.source_path)
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    with _single_instance(netmon_db_path(cfg.db_path)):
+        return run_netmon(cfg.db_path, settings, stop)
 
 
 def cmd_hash_password(cfg, args) -> int:
@@ -239,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     p_rollup.add_argument("--full", action="store_true", help="원본 전체에서 다시 계산")
     sub.add_parser("web", help="대시보드 웹서버 실행 (systemd 서비스용)")
     sub.add_parser("sysmon", help="RPi 상태 모니터 실행 (systemd 서비스용)")
+    sub.add_parser("netmon", help="공유기 인터넷 송수신량 모니터 실행 (systemd 서비스용, UPnP 읽기만)")
     sub.add_parser("hash-password", help="대시보드 비밀번호 해시 만들기")
     args = parser.parse_args(argv)
 
@@ -254,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = {
         "auth": cmd_auth, "check": cmd_check, "run": cmd_run, "intervals": cmd_intervals,
-        "rollup": cmd_rollup, "web": cmd_web, "sysmon": cmd_sysmon, "hash-password": cmd_hash_password,
+        "rollup": cmd_rollup, "web": cmd_web, "sysmon": cmd_sysmon, "netmon": cmd_netmon, "hash-password": cmd_hash_password,
     }[args.command]
     try:
         return handler(cfg, args)

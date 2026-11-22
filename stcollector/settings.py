@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import tomllib
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,24 @@ class SysmonSettings:
     event_retention_days: int = 365
     overheat_c: float = 80.0
     runtime_file: str = "/run/stcollector-sysmon/current.json"
+
+
+@dataclass(frozen=True)
+class NetmonSettings:
+    """[netmon] 공유기 인터넷 송수신량 (UPnP 읽기 액션만)."""
+    enabled: bool = True
+    router: str = "192.168.0.1"     # 공유기 IP. 이 주소와만 통신한다
+    location: str = ""              # SSDP 로 못 찾을 때 쓸 장치 설명 URL (예: http://192.168.0.1:57078/rootDesc.xml)
+    interval_s: int = 60
+    flush_s: int = 600              # 1분 기록을 몇 초마다 저장할지
+    minute_retention_days: int = 14
+    max_mbps: int = 1000            # 공유기가 링크 속도를 알려 주지 않을 때 쓰는 상한 (불가능한 양 거르기)
+    runtime_file: str = "/run/stcollector-netmon/current.json"
+
+
+def netmon_db_path(db_path: str | os.PathLike) -> Path:
+    """인터넷 사용량 DB. 수집 DB, sysmon.db 와 파일을 나눈다."""
+    return Path(db_path).parent / "netmon" / "netmon.db"
 
 
 def sysmon_db_path(db_path: str | os.PathLike) -> Path:
@@ -141,4 +160,39 @@ def load_web_settings(path: str | os.PathLike) -> WebSettings:
         session_days=days,
         hub_status_allow=hub_addrs,
         air_quality_temp_in_rooms=air_temp,
+    )
+
+
+def load_netmon_settings(path: str | os.PathLike) -> NetmonSettings:
+    raw = _read(path).get("netmon", {})
+    d = NetmonSettings()
+
+    def integer(key: str, minimum: int) -> int:
+        value = raw.get(key, getattr(d, key))
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            raise ConfigError(f"netmon.{key} 는 {minimum} 이상의 정수여야 합니다 (현재: {value!r})")
+        return value
+
+    enabled = raw.get("enabled", d.enabled)
+    if not isinstance(enabled, bool):
+        raise ConfigError("netmon.enabled 는 true 또는 false 여야 합니다")
+    router = raw.get("router", d.router)
+    try:
+        addr = ipaddress.ip_address(router)
+    except (TypeError, ValueError):
+        raise ConfigError(f"netmon.router 는 공유기 IP 주소여야 합니다 (현재: {router!r})") from None
+    if not addr.is_private or addr.version != 4:
+        raise ConfigError("netmon.router 는 집 안 네트워크의 IPv4 주소여야 합니다")
+    location = raw.get("location", d.location)
+    if not isinstance(location, str):
+        raise ConfigError("netmon.location 은 문자열이어야 합니다")
+    if location:
+        parts = urllib.parse.urlsplit(location)
+        if parts.scheme != "http" or parts.hostname != str(addr):
+            raise ConfigError("netmon.location 은 공유기 주소의 http URL 이어야 합니다")
+    return NetmonSettings(
+        enabled=enabled, router=str(addr), location=location,
+        interval_s=integer("interval_s", 30), flush_s=integer("flush_s", 60),
+        minute_retention_days=integer("minute_retention_days", 2), max_mbps=integer("max_mbps", 1),
+        runtime_file=str(raw.get("runtime_file", d.runtime_file)),
     )

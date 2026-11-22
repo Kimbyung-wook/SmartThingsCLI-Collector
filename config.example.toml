@@ -162,3 +162,21 @@ flush_s = 600
 minute_retention_days = 14
 event_retention_days = 365
 overheat_c = 80.0
+
+[netmon]
+# 집 공유기의 인터넷(WAN) 송수신량. 공유기 UPnP 의 WANCommonInterfaceConfig 읽기 액션
+# (GetTotalBytesReceived, GetTotalBytesSent, GetCommonLinkProperties)만 보낸다.
+# 공유기 관리자 로그인, SNMP, 포트 매핑 같은 쓰기 액션은 쓰지 않는다. 기기별 사용량과 집 안 통신은 잡히지 않는다.
+# 끄려면 false 로 두고 stcollector-netmon 서비스를 멈춘다 (켜져 있어도 서비스를 시작해야 수집한다).
+enabled = true
+# 공유기 IP. 이 주소와만 통신한다 (systemd 유닛의 IPAddressAllow 대역과 맞춘다).
+router = "192.168.0.1"
+# SSDP 로 공유기를 못 찾을 때 쓸 장치 설명 URL. 공유기 재부팅으로 포트가 바뀔 수 있어 먼저 SSDP 로 찾는다.
+location = "http://192.168.0.1:57078/rootDesc.xml"
+# 읽기 주기(초). 카운터가 32비트라 100 Mbps 에서 약 6분이면 한 바퀴 돈다. 3주기보다 긴 공백 뒤의 차이는 버린다.
+interval_s = 60
+# 1분 기록을 몇 초마다 저장할지 (microSD 쓰기 줄이기). 저장 전 기록도 화면에는 바로 보인다.
+flush_s = 600
+minute_retention_days = 14
+# 공유기가 링크 속도를 알려 주지 않을 때 쓰는 상한(Mbps). 이 속도로 불가능한 증가량(재부팅으로 0이 됨)은 버린다.
+max_mbps = 1000

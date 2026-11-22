@@ -8,6 +8,8 @@
 센서처럼 값이 일정 이상 변하거나 일정 시간이 지났을 때만 보고한다.
 수집 중단 구간도 넣어서 coverage 표시를 확인할 수 있다.
 DB 옆 sysmon/ 폴더에 시스템 모니터의 가짜 기록(sysmon.db, current.json)도 만든다.
+DB 옆 netmon/ 폴더에 공유기 인터넷 송수신량의 가짜 기록(netmon.db, current.json)도 만든다.
+32비트 카운터가 도는 것과 공유기 재부팅(0으로 돌아감)을 넣어 실제 모니터 계산을 거친다.
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stcollector.db import Database  # noqa: E402
-from stcollector.settings import sysmon_db_path  # noqa: E402
+from stcollector.netmon import COUNTER_MOD, NetMonitor, NetStore, Reading  # noqa: E402
+from stcollector.netmon import write_runtime as write_net_runtime  # noqa: E402
+from stcollector.settings import NetmonSettings, netmon_db_path, sysmon_db_path  # noqa: E402
 from stcollector.sysmon import Sample, SysmonStore, write_runtime  # noqa: E402
 
 MIN = 60_000
@@ -369,6 +373,52 @@ def generate_air(db: Database, days: int, seed: int, now_ms: int) -> int:
     return total
 
 
+def generate_netmon(db_path: Path, days: int, seed: int, now_ms: int) -> int:
+    """공유기 누적 바이트를 1분마다 읽은 것처럼 만들어 실제 NetMonitor 로 1분 기록·1시간 요약을 만든다."""
+    rng = random.Random(seed + 3)
+    path = netmon_db_path(db_path)
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(path) + suffix).unlink(missing_ok=True)
+    store = NetStore(path)
+    settings = NetmonSettings(flush_s=10**9)
+    monitor = NetMonitor(store, settings)
+    link = {"down_bps": 100_000_000, "up_bps": 100_000_000, "status": "Up"}
+    gaps = outages(now_ms)
+    reboots = {now_ms - d * DAY - 3 * HOUR for d in (9, 40, 75, 200)}  # 공유기 재부팅 (카운터가 0으로)
+    rx = tx = 0
+    rx_mbps = 0.3
+    t = now_ms - days * DAY
+    t -= t % MIN
+    cut = now_ms - 6 * MIN  # 이 뒤는 저장 전 기록으로 현재값 파일에 남긴다
+    flushed = False
+    while t < now_ms:
+        hod = hour_of_day(t)
+        evening = 19 <= hod < 24
+        base = 9.0 if evening else 2.0 if 7 <= hod < 19 else 0.3
+        rx_mbps = max(0.05, rx_mbps + (base - rx_mbps) * 0.2 + rng.gauss(0, base * 0.15))
+        burst = rng.uniform(40, 92) if rng.random() < 0.004 else 0.0  # 내려받기
+        down = rx_mbps + burst
+        up = 0.08 * down + (rng.uniform(1.5, 4) if 10 <= hod < 18 and rng.random() < 0.05 else 0.05)
+        rx = (rx + int(down * 1e6 / 8 * 60)) % COUNTER_MOD
+        tx = (tx + int(up * 1e6 / 8 * 60)) % COUNTER_MOD
+        if any(r <= t < r + MIN for r in reboots):
+            rx, tx = rng.randint(0, 5_000_000), rng.randint(0, 1_000_000)
+        if t >= cut and not flushed:
+            monitor.flush(t)
+            flushed = True
+        ts = t + rng.randint(0, 1500)
+        if any(a <= t < b for a, b in gaps):
+            monitor.step(ts, None, link, "공유기 연결 실패: timed out")
+        else:
+            monitor.step(ts, Reading(ts, rx, tx), link)
+        t += MIN
+    total = store.conn.execute("SELECT COUNT(*) FROM minutes").fetchone()[0] + len(monitor.pending)
+    store.apply_retention(now_ms, settings.minute_retention_days)
+    write_net_runtime(path.parent / "current.json", monitor.snapshot(now_ms, link))
+    store.close()
+    return total
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--db", required=True)
@@ -386,6 +436,7 @@ def main() -> int:
     n += generate_air(db, args.days, args.seed, now_ms)
     db.close()
     generate_sysmon(path, args.seed, now_ms, days=args.days)
+    generate_netmon(path, args.days, args.seed, now_ms)
     print(f"측정값 {n:,}건 생성, {time.time() - begin:.1f}초, 파일 {path.stat().st_size / 1e6:.1f} MB")
     return 0
 

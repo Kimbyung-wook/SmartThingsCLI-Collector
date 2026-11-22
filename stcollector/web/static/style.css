@@ -50,12 +50,13 @@ b,strong{font-weight:600}
 .actions form{margin:0}
 .ghost{color:var(--ink2);font-size:13px;padding:8px;border-radius:8px;min-height:36px;transition:background-color .14s var(--ease)}
 .ghost:hover{background:var(--sunken)}
-.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);border-bottom:1px solid var(--line);padding:0 8px;
-  position:sticky;top:0;background:var(--surface);z-index:5}
-@media (min-width:640px){.tabs{display:flex;gap:4px}}
+/* 좁은 화면: 탭 너비를 글자에 맞추고 남는 폭을 사이에 나눈다 (8개 탭이 겹치지 않게). 더 좁으면 탭 줄만 옆으로 밀림 */
+.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:auto;justify-content:space-between;border-bottom:1px solid var(--line);padding:0 8px;
+  position:sticky;top:0;background:var(--surface);z-index:5;overflow-x:auto;scrollbar-width:none}
+@media (min-width:640px){.tabs{display:flex;gap:4px;justify-content:flex-start}}
 .tabs a{display:block;text-decoration:none;text-align:center;padding:12px 2px 10px;min-height:44px;color:var(--ink2);
   border-bottom:2px solid transparent;margin-bottom:-1px;font-size:13px;white-space:nowrap;transition:color .14s var(--ease)}
-@media (max-width:420px){.tabs{padding:0 4px}.tabs a{font-size:12.5px;padding-left:0;padding-right:0}}
+@media (max-width:420px){.tabs{padding:0 4px}.tabs a{font-size:12.5px;padding-left:2px;padding-right:2px}}
 @media (min-width:640px){.tabs a{padding:12px 12px 10px;font-size:14px}}
 .tabs a:hover{color:var(--ink)}
 .tabs a[aria-current=page]{color:var(--ink);font-weight:600;border-color:var(--accent)}

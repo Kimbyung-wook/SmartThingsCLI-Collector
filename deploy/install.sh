@@ -117,7 +117,7 @@ install -d -m 700 -o stcollector -g stcollector "$CLI_HOME"
 
 # 6) stcollector 래퍼와 systemd 서비스
 install -m 755 -o root -g root "$SRC/deploy/stcollector" /usr/local/bin/stcollector
-for unit in stcollector.service stcollector-web.service stcollector-rollup.service stcollector-rollup.timer stcollector-sysmon.service; do
+for unit in stcollector.service stcollector-web.service stcollector-rollup.service stcollector-rollup.timer stcollector-sysmon.service stcollector-netmon.service; do
     install -m 644 -o root -g root "$SRC/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
@@ -131,8 +131,12 @@ if ! grep -q '^\[sysmon\]' /etc/stcollector/config.toml; then
     sed -n '/^\[sysmon\]/,$p' "$SRC/config.example.toml" >> /etc/stcollector/config.toml
     echo "설정 파일에 [sysmon] 항목을 추가했습니다."
 fi
+if ! grep -q '^\[netmon\]' /etc/stcollector/config.toml; then
+    sed -n '/^\[netmon\]/,$p' "$SRC/config.example.toml" >> /etc/stcollector/config.toml
+    echo "설정 파일에 [netmon] 항목을 추가했습니다."
+fi
 
-for svc in stcollector stcollector-web stcollector-sysmon; do
+for svc in stcollector stcollector-web stcollector-sysmon stcollector-netmon; do
     if systemctl is-active --quiet "$svc"; then
         systemctl restart "$svc"
         echo "서비스 재시작 완료: $svc"
@@ -161,4 +165,5 @@ cat <<'EOF'
   4) sudo ufw allow from 192.168.0.0/24 to any port 8080 proto tcp
   5) sudo systemctl enable --now stcollector-web             # http://<RPi IP>:8080
   6) sudo systemctl enable --now stcollector-sysmon          # RPi 상태와 이벤트 기록 (상태 탭)
+  7) sudo systemctl enable --now stcollector-netmon          # 공유기 인터넷 송수신량 (인터넷 탭, UPnP 읽기만)
 EOF

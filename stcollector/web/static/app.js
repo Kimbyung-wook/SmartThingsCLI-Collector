@@ -65,8 +65,8 @@
 
   // ---- 공용 조각 ------------------------------------------------------------------
   const S = { tab: 'summary', metric: 'temperature', period: '24h', room: 'all', luxRoom: null, luxScope: 'all', luxPeriod: 'month',
-    occRoom: null, occPeriod: 'month', plugPeriod: 'month', sysPeriod: '24h', airPeriod: '24h' };
-  const TABS = [['summary', '요약'], ['trend', '추세'], ['air', '공기질'], ['lux', '조도 분포'], ['occ', '재실'], ['plug', '플러그'], ['status', '상태']];
+    occRoom: null, occPeriod: 'month', plugPeriod: 'month', sysPeriod: '24h', airPeriod: '24h', netPeriod: '24h' };
+  const TABS = [['summary', '요약'], ['trend', '추세'], ['air', '공기질'], ['lux', '조도 분포'], ['occ', '재실'], ['plug', '플러그'], ['net', '인터넷'], ['status', '상태']];
   const METRICS = [['temperature', '온도'], ['humidity', '습도'], ['illuminance', '조도'], ['dewpoint', '이슬점']];
   const PERIODS = [['24h', '24시간 · 시간별'], ['month', '1개월 · 일별'], ['year', '1년 · 주별']];
   let meta = null;
@@ -599,6 +599,63 @@
     cores.forEach(c => { out.cpu_cores[c] = [].concat(...list.map(q => (q.cpu_cores || {})[c] || q.buckets.map(() => null))); });
     return out;
   }
+  // ---- 인터넷 (공유기 WAN 송수신량) ----------------------------------------------------
+  const NET_CHARTS = [
+    ['volume', '송수신량', '구간별 합계'],
+    ['speed', '속도', '선은 구간 평균, 띠는 평균~최대 (약 1분 평균 속도 기준)'],
+  ];
+  const netChunk = d => ({ ...seriesChunk(d), data: d });
+  const netPart = (d, key) => ({ ...d[key], buckets: d.buckets, grain: d.grain });
+  const mbpsText = v => (v == null ? '—' : fmt(v, v < 10 ? 2 : 1) + ' Mbps');
+  async function vNet() {
+    const period = S.netPeriod;
+    const d = await api('/api/network', { period });
+    const controls = h('div', { class: 'controls' }, seg('netPeriod', PERIODS, '기간'));
+    if (!d.enabled) return [controls, empty('인터넷 사용량 수집 꺼짐', '설정 파일 [netmon] enabled = true 로 켜고 stcollector-netmon 서비스를 시작하면 표시')];
+    if (!d.available) return [controls, empty('인터넷 사용량 기록 없음', 'stcollector-netmon 서비스가 공유기에서 송수신량을 읽기 시작하면 표시')];
+    const c = d.current, out = [controls];
+    if (c) {
+      out.push(h('div', { class: 'stats' },
+        stat('지금 받기', mbpsText(c.rx_mbps), c.stale ? '모니터 응답 없음' : '최근 1분 평균'),
+        stat('지금 보내기', mbpsText(c.tx_mbps)),
+        stat('오늘 받은 양', fmt(c.today_rx_gb, 2) + ' GB', '자정부터'),
+        stat('오늘 보낸 양', fmt(c.today_tx_gb, 2) + ' GB'),
+        stat('공유기 링크', c.link_down_mbps ? fmt(c.link_down_mbps) + ' Mbps' : '—', c.link_status)));
+      if (c.error) out.push(h('p', { class: 'sub', text: '공유기 읽기 실패' + (c.error_since ? ` (${stamp(c.error_since)}부터)` : '') + ' · 그동안은 결측으로 둡니다' }));
+    }
+    const g = Charts.pan({
+      view: PAN_VIEW[period], first: netChunk(d), range: rangeText(d.grain === 'hour'),
+      load: end => api('/api/network', withEnd({ period }, end)).then(netChunk),
+      merge: list => ({ volume: mergeSeries(list.map(x => netPart(x, 'volume'))), speed: mergeSeries(list.map(x => netPart(x, 'speed'))) }),
+    });
+    out.push(h('div', { class: 'legend' }, legendLine(color(0), '받기 (인터넷 → 집)'), legendLine(color(1), '보내기 (집 → 인터넷)'),
+      h('span', { text: '흐린 구간은 기록 50% 미만' })), g.bar);
+    NET_CHARTS.forEach(([key, title, sub]) => {
+      const band = key === 'speed', digits = d[key].digits, unit = d[key].unit;
+      const sec = section(`${title} (${unit})`, sub), host = chartHost();
+      later(() => g.add(host, mm => {
+        const m = mm[key];
+        return {
+          xs: m.buckets, xend: m.xend, tip: i => bucketTip(m.buckets[i], m.grain), series: m.series, band, unit, digits,
+          height: W => (W < 520 ? 190 : 240),
+          ...(m.grain === 'hour' ? { x: i => hourTick(m.buckets[i]), ...TIME_TICKS } : { x: i => bucketX(m.buckets[i], m.grain) }),
+          aria: `인터넷 ${title} 차트. 받기와 보내기. 옆으로 끌면 이전 기간. 값은 아래 표로도 볼 수 있습니다.`,
+        };
+      }, 'net-' + key));
+      const tv = tableView(() => {  // 지금 보이는 구간만
+        const m = g.merged[key];
+        const cell = (r, i) => fmt(r.avg[i], digits) + (band && r.max && r.max[i] != null ? ` (최대 ${fmt(r.max[i], digits)})` : '');
+        return table(['구간', ...m.series.map(r => r.name)],
+          visibleIndex(m.buckets, m.xend, g).map(i => [bucketTip(m.buckets[i], m.grain), ...m.series.map(r => cell(r, i))]), i => i > 0);
+      }, true);
+      sec.append(host, tv);
+      out.push(sec);
+    });
+    later(() => g.start());
+    out.push(h('p', { class: 'sub', text: '공유기(UPnP)의 인터넷 누적 송수신 바이트로 계산 · 집 안 기기끼리의 통신과 기기별 사용량은 포함되지 않음' }));
+    return out;
+  }
+
   // load 는 저장된 값 그대로 받고, 화면에서만 코어 수로 나눈 % 로 보여 준다 (100% 를 넘을 수 있다)
   let cores = 1;
   const loadToPct = v => (v == null ? null : v * 100 / cores);
@@ -735,7 +792,7 @@
   }
 
   // ---- 틀 -------------------------------------------------------------------------
-  const VIEWS = { summary: vSummary, trend: vTrend, air: vAir, lux: vLux, occ: vOcc, plug: vPlug, status: vStatus };
+  const VIEWS = { summary: vSummary, trend: vTrend, air: vAir, lux: vLux, occ: vOcc, plug: vPlug, net: vNet, status: vStatus };
   let token = 0;
   async function render() {
     const me = ++token;

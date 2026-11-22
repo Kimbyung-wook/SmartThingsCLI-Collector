@@ -36,6 +36,7 @@ flowchart LR
   - 코어별 CPU 사용률: `/proc/stat`의 `cpuN` 줄마다 같은 방식으로 계산. `minutes.cpu_cores`에 코어 번호를 키로 한 JSON 텍스트(`{"0":12.3,"1":4.5}`)로 1분 평균을 저장. 코어 수가 기기마다 다르고, 오프라인 코어는 줄이 없어 번호가 비므로 위치 배열 대신 번호 키를 씀. 없던 코어가 켜지면 직전 값이 없어 한 표본 뒤부터 나옴
   - `cpu_avg`, `cpu_cores` 열이 없는 이전 DB는 모니터가 시작할 때 `ALTER TABLE`로 열을 더함. 웹은 읽기 전용이라 열이 없으면 `NULL`로 읽음
   - `/api/system`: `series.cpu`(구간별 전체 평균), `series.cpu_cores`(`{"0": [구간별 평균 또는 null, ...]}`, 코어 번호 순), `current.cpu_pct`, `cpu_pct_1m`, `cpu_cores`. 대시보드 상태 탭은 코어별 사용률을 한 차트에 겹쳐 그림. `/hub/status`와 드라이버는 전체 사용률만 씀
+- 그림에 없는 `stcollector-netmon`: 집 공유기의 인터넷 송수신량만 기록, 분리된 `netmon.db` 사용 (아래 [인터넷 사용량](#인터넷-사용량-netmonpy))
 
 ## 수집
 
@@ -166,6 +167,37 @@ flowchart TD
 - 표시 자릿수: TVOC·HCHO가 ppm·mg/m³면 소수 셋째 자리, CO는 첫째 자리, 그 밖은 정수
 
 
+## 인터넷 사용량 (`netmon.py`)
+
+- 출처: 집 공유기(192.168.0.1)의 UPnP IGD `WANCommonInterfaceConfig:1` 서비스. 로그인 없이 읽히는 누적 바이트
+- 범위: 공유기 WAN 쪽 합계만. 기기별 사용량과 집 안끼리의 통신은 알 수 없음
+- 쓰는 액션: `ALLOWED_ACTIONS` 허용 목록의 읽기 3개만
+  - `GetTotalBytesReceived`, `GetTotalBytesSent`, `GetCommonLinkProperties`
+  - 목록 밖 액션(포트 매핑 추가·삭제 등)은 `soap_request()`가 `PermissionError`를 내 HTTP 요청 자체를 만들지 않음. 시험(`tests/test_netmon.py`)이 목록과 차단을 확인
+  - 공유기 관리자 로그인, SNMP는 쓰지 않음
+- 주소 찾기
+  - SSDP M-SEARCH(`ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1`)를 239.255.255.250:1900으로 보냄. 응답 주소와 `LOCATION` 호스트가 둘 다 `[netmon] router`일 때만 받아들임 (UPnP 포트가 공유기 재시작 때 바뀔 수 있어서)
+  - SSDP가 응답이 없으면 설정 `location`(장치 설명 URL)을 씀. SSDP 재시도는 10분에 한 번
+  - 장치 설명 XML에서 서비스의 `controlURL`을 찾고 그 주소로 SOAP POST
+- HTTP 제한: 공유기 주소만, 프록시 무시, 리디렉션 따르지 않음, 응답 64KB 상한, `DOCTYPE`·`ENTITY`가 든 XML 거부
+- 읽기 주기: `interval_s`(기본 60초). 링크 속도와 상태는 10분마다
+- 증가량 계산 (`counter_delta()`)
+  - 카운터는 32비트(4GB에서 0으로 돌아감)로 보고, 새 값이 작으면 2^32를 더함
+  - 그 결과가 링크 속도(없으면 `max_mbps`)의 1.1배로도 불가능한 양이면 공유기 재시작으로 보고 그 구간을 버림
+  - 직전 읽기와 `3 × interval_s`보다 벌어지면 그 구간을 버림 (긴 공백에서는 돌아감 횟수를 알 수 없음)
+  - 버린 구간과 읽기 실패는 결측. 다음 읽기부터 다시 이어 셈
+- 저장: `netmon.db`
+  - `minutes`: 구간 끝 시각(`ts_ms`), 구간 길이, 받은·보낸 바이트. `flush_s`(기본 600초)마다 모아 씀 (microSD 쓰기 절약). `minute_retention_days`(기본 14일)가 지나면 지움
+  - `hours`: 끝난 시(KST 정시 경계, 구간 끝 시각 기준)의 바이트 합, 덮은 시간(`covered_ms`), 1분 최대 속도(bps), 표본 수. 저장할 때마다 끝난 시를 만들고 `meta.hours_done`에 기록. 지우지 않음
+- 현재값 파일 `/run/stcollector-netmon/current.json`: 마지막 1분 속도, 링크 속도·상태, 오류와 시작 시각, 아직 저장하지 않은 1분 기록(`pending`)
+- 다른 서비스와의 관계: 수집 DB, `sysmon.db`를 쓰지 않음. 공유기 오류는 이 서비스 안의 결측으로 끝남
+- `/api/network?period=24h|month|year&end=`
+  - 단위: 시간별(24시간), 일별(1개월), 주별(1년). 경계는 KST, 계산은 정수 ms
+  - `hours`(끝난 시) + `minutes`와 `pending`(아직 시로 묶지 않은 구간)을 합쳐 만듦. 집계 타이머(`rollup`)와 무관
+  - `volume`: 구간별 받기·보내기 GB. `speed`: 구간 평균 Mbps(선)와 1분 최대 Mbps(띠 위쪽)
+  - `current`: 지금 속도, 오늘(KST) 받은·보낸 양, 링크, 오류. 현재값 파일이 `3 × interval_s` 넘게 갱신되지 않으면 `stale`
+  - 끌어서 과거 보기: 다른 추세 API와 같은 조각 크기(3일, 90일, 3년)와 `has_older`
+
 ## 집계 (`rollup.py`)
 
 - 규칙의 이유: [PLAN §7](../PLAN.md#7-저장--집계)
@@ -225,6 +257,7 @@ flowchart LR
   - `/hub/status`: SmartThings 허브용 요약 (아래 [허브 상태 경로](#허브-상태-경로-hubstatus))
   - `/api/air`: 공기질 탭의 틀. 데이터가 있는 항목(단위별), 데이터가 없는 자리(`reserved`), 방별 현재값·등급. 차트는 `/api/series`로 받음
   - `/api/series`: 공기질 항목도 받고 계열마다 단위와 자릿수를 실음
+  - `/api/network`: 인터넷 탭. `netmon.db`와 현재값 파일만 읽음 ([인터넷 사용량](#인터넷-사용량-netmonpy))
 - `session.py`
   - scrypt 비밀번호 검증과 서명된 세션 쿠키
   - 세션 키는 비밀번호 해시에서 유도해 재시작해도 유지
@@ -235,7 +268,7 @@ flowchart LR
 
 ### 화면
 
-- 탭: 요약, 추세, 공기질, 조도 분포, 재실, 플러그, 상태. 7개가 스마트폰 폭에 들어가게 맞춤
+- 탭: 요약, 추세, 공기질, 조도 분포, 재실, 플러그, 인터넷, 상태. 스마트폰 폭에 들어가게 맞춤
 - 요약 탭: 방별 현재값 띠(온도 크게, 습도·조도·재실), 최근 24시간 온도 큰 차트 1개, 습도·조도 작은 차트 2개, 방별 상태 표
   - 공기질 데이터가 있는 방만 띠에 PM2.5·CO2 현재값을 더함. 기기가 등급을 주면 괄호 안에 표시
 - 공기질 탭
@@ -253,6 +286,12 @@ flowchart LR
   - `false`: 방별 온습도(요약·추세·이슬점)에 섞지 않아 대시보드에 보이지 않음. PV28-CW 온도는 정수 °C에 사용자 보정값이 들어가기 때문
   - `true`: 방별 온습도에 섞음
 - 조도 화면의 색: 전구색 계열
+- 인터넷 탭
+  - 기간: 24시간(시간별), 1개월(일별), 1년(주별)
+  - 현재값: 지금 받기·보내기 Mbps, 오늘 받은·보낸 양, 공유기 링크 속도. 읽기 오류가 이어지면 그 시작 시각을 표시
+  - 차트: 받은·보낸 양(GB), 속도(평균 Mbps 선, 1분 최대까지 띠). 표 보기
+  - 과거 보기: 차트를 옆으로 끌거나 이전·다음·최신 버튼. 두 차트가 함께 움직임
+  - 꺼져 있거나(`enabled = false`) 기록이 없으면 안내만 표시
 - 상태 탭
   - 기간: 1시간(1분별), 24시간(5분별, 14일보다 전은 1시간 평균)
   - RPi 현재값: CPU 온도, CPU 클럭, CPU Load(1분, %), 여유 메모리, 디스크 여유, 가동 시간
@@ -265,7 +304,7 @@ flowchart LR
 | API | 캐시 기준 |
 |---|---|
 | `/api/series`, `/api/lux-dist`, `/api/occupancy`, `/api/plugs` | 집계 완료 시각과 현재 시 |
-| `/api/summary`, `/api/status`, `/api/meta`, `/api/system`, `/api/air` | 15초 |
+| `/api/summary`, `/api/status`, `/api/meta`, `/api/system`, `/api/air`, `/api/network` | 15초 |
 
 ### 화면 상단 경고
 
@@ -356,6 +395,8 @@ flowchart TB
 
 - 타이머만 집계 서비스를 시작하고, 서비스끼리는 DB로만 연결
 - 그림에 없는 `stcollector-sysmon.service`: 수집 DB를 쓰지 않는 상시 모니터
+- 그림에 없는 `stcollector-netmon.service`: 수집 DB를 쓰지 않는 상시 인터넷 사용량 기록
+  - 모니터(`sysmon`)에 넣지 않은 이유: 모니터는 `PrivateNetwork=true`라 네트워크가 아예 없음. 공유기를 읽으려고 모니터의 제한을 풀지 않고 서비스를 나눔
 
 | 유닛 | 형태 | 실행 | 주요 제한 |
 |---|---|---|---|
@@ -364,15 +405,16 @@ flowchart TB
 | `stcollector-rollup.service` | 1회 실행 (`oneshot`) | `rollup` | `MemoryMax=256M`, `Nice=10`, IO idle, `PrivateNetwork=true` |
 | `stcollector-rollup.timer` | 매시 2분, 꺼져 있던 동안 놓치면 켜진 뒤 1회 | 위 서비스를 시작 | |
 | `stcollector-sysmon.service` | 상시, 실패 시 30초 뒤 재시작. 종료 코드 2는 재시작 안 함 | `sysmon` | `MemoryMax=48M`, `Nice=5`, IO idle, `PrivateNetwork=true`, 자격증명 경로 접근 차단 |
+| `stcollector-netmon.service` | 상시, 실패 시 30초 뒤 재시작. 종료 코드 2는 재시작 안 함 | `netmon` | `MemoryMax=48M`, `Nice=5`, IO idle, `IPAddressAllow=192.168.0.0/24 239.255.255.250/32`(그 밖 거부), `AF_INET`·`AF_UNIX`만, `MemoryDenyWriteExecute=true`, 자격증명 경로 접근 차단 |
 
 - `install.sh`: 유닛 복사와 `daemon-reload`만 수행
-- 활성화(`enable`): 사람이 직접 수행. 현재 RPi는 수집, 웹, 모니터, 집계 타이머 모두 활성화, 부팅 시 자동 시작
-- 설치 시 재시작 대상: 이미 실행 중인 수집, 웹, 모니터만
+- 활성화(`enable`): 사람이 직접 수행. 현재 RPi는 수집, 웹, 모니터, 집계 타이머 모두 활성화, 부팅 시 자동 시작. 인터넷 사용량은 배포 뒤 따로 활성화
+- 설치 시 재시작 대상: 이미 실행 중인 수집, 웹, 모니터, 인터넷 사용량만
 - 유닛 사이의 `After=`, `Requires=` 의존 관계: 없음
-- 중복 실행 방지: 수집기, 집계, 모니터가 각각 잠금 파일(`sensors.db.lock`, `sensors.db.rollup.lock`, `sysmon/sysmon.db.lock`) 사용
-- 실행 계정: 수집, 웹, 집계, 모니터 모두 `stcollector`
+- 중복 실행 방지: 수집기, 집계, 모니터, 인터넷 사용량이 각각 잠금 파일(`sensors.db.lock`, `sensors.db.rollup.lock`, `sysmon/sysmon.db.lock`, `netmon/netmon.db.lock`) 사용
+- 실행 계정: 수집, 웹, 집계, 모니터, 인터넷 사용량 모두 `stcollector`
 - 공통 보안 옵션: `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true` 등
-- 쓰기 가능 위치: `StateDirectory`인 `/var/lib/stcollector`만. 모니터는 `/var/lib/stcollector/sysmon`과 `/run/stcollector-sysmon`만
+- 쓰기 가능 위치: `StateDirectory`인 `/var/lib/stcollector`만. 모니터는 `/var/lib/stcollector/sysmon`과 `/run/stcollector-sysmon`만, 인터넷 사용량은 `/var/lib/stcollector/netmon`과 `/run/stcollector-netmon`만
 
 ## 파일 위치
 
@@ -389,6 +431,8 @@ flowchart TB
 | `/var/lib/stcollector/token.json` | OAuth 토큰 (OAuth 방식일 때만) | stcollector, 600 |
 | `/var/lib/stcollector/sysmon/sysmon.db` | RPi 상태 1분 요약과 이벤트 | stcollector, 폴더 700 |
 | `/run/stcollector-sysmon/current.json` | RPi 상태 현재값 (tmpfs) | stcollector, 폴더 700 |
+| `/var/lib/stcollector/netmon/netmon.db` | 인터넷 송수신 1분 기록과 시간별 합 | stcollector, 폴더 700 |
+| `/run/stcollector-netmon/current.json` | 인터넷 사용량 현재값 (tmpfs) | stcollector, 폴더 700 |
 
 ## 보안 경계
 
@@ -402,6 +446,7 @@ flowchart LR
         browser["브라우저"]
         pc["PC의 SSH"]
         hub["SmartThings 허브"]
+        router["집 공유기<br/>192.168.0.1"]
     end
     subgraph rpi["Raspberry Pi"]
         fw["ufw 기본 거부<br/>집 안 대역의 22, 8080만 허용"]
@@ -409,6 +454,7 @@ flowchart LR
             web["웹<br/>allowed_networks, IPAddressAllow, 비밀번호"]
             collector["수집기<br/>ALLOWED_COMMANDS 읽기 명령만"]
             rollup["집계<br/>PrivateNetwork"]
+            netmon["인터넷 사용량<br/>ALLOWED_ACTIONS 읽기 액션만"]
             cred[("CLI 자격증명<br/>파일 600, 폴더 700")]
             db[("SQLite")]
         end
@@ -424,6 +470,7 @@ flowchart LR
     rollup --> db
     collector --> cred
     collector -->|"나가는 HTTPS, IP 제한 없음"| st
+    netmon -->|"UPnP 읽기, 집 안 대역만"| router
 ```
 
 | 경계 | 막는 수단 | 한계 |
@@ -433,6 +480,7 @@ flowchart LR
 | SmartThings 허브 → `/hub/status` | `hub_status_allow`에 적은 IP만, 읽기 전용 GET, 이름·오류 문구·비밀값 없는 요약 | 로그인 없음. 허브 IP를 다른 기기가 쓰면 같은 요약을 볼 수 있음 (공유기에서 허브 IP 고정) |
 | 대시보드 로그인 | scrypt, IP별 5회 실패 시 5분 차단, `HttpOnly`·`SameSite=Lax` 쿠키, POST `Origin` 검사, 자체 출처만 허용하는 CSP | 로그인 전 접근 가능 범위는 로그인 화면, CSS, manifest, 아이콘 |
 | 수집기 → 기기 제어 | `ALLOWED_COMMANDS` 허용 목록 | 수집기 안의 제한. 자격증명 파일 유출 시 차단 불가 |
+| 인터넷 사용량 → 공유기 | `ALLOWED_ACTIONS` 읽기 액션 허용 목록, 공유기 주소만, 서비스의 `IPAddressAllow` | 공유기 UPnP는 로그인 없이 쓰기 액션도 받으므로, 막는 것은 이 코드의 허용 목록뿐 |
 | CLI 자격증명 파일 | `stcollector` 계정 전용 (파일 600, 폴더 700) | 권한은 `controller:stCli`로 제어까지 가능. 웹과 집계도 같은 계정으로 동작, sudo 사용자는 읽기 가능 |
 | 프로세스 격리 | systemd 보안 옵션 | 수집 서비스는 나가는 IP 제한 없음 |
 | 로그 | CLI 오류 문구 가림, 웹 접속 로그 없음 | CLI 자체 로그의 내용은 미확인 |

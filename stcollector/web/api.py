@@ -24,6 +24,7 @@ from pathlib import Path
 from ..rollup import (
     DAY_MS, HOUR_MS, KST_OFFSET_MS, LUX_LABELS, WEEK_MS, floor_hour, iter_segments, kst_day_start, kst_week_start,
 )
+from ..netmon import hour_rows
 from ..settings import RollupSettings
 
 ROLLUP_TABLES = {"hour": "rollup_hour", "day": "rollup_day", "week": "rollup_week"}
@@ -101,9 +102,11 @@ class Series:
 
 class Context:
     def __init__(self, conn, now_ms: int, db_path: Path, sysmon_db: Path | None = None,
-                 sysmon_current: Path | None = None, air_temp_in_rooms: bool = False):
+                 sysmon_current: Path | None = None, air_temp_in_rooms: bool = False, netmon: dict | None = None):
         self.conn, self.now_ms, self.db_path = conn, now_ms, db_path
         self.sysmon_db, self.sysmon_current = sysmon_db, sysmon_current
+        # 인터넷 사용량: {"enabled", "db", "current", "interval_s"} (server.App.netmon_view). 없으면 꺼진 것으로 본다
+        self.netmon = netmon or {"enabled": False, "db": None, "current": None, "interval_s": 60}
         self.air_temp_in_rooms = air_temp_in_rooms
         self._index = None
 
@@ -1037,6 +1040,149 @@ def system(ctx: Context, params: dict) -> dict:
             "ref": _ref_current(ctx, ref) if ref is not None else None}
 
 
+# ---- /api/network: 공유기 인터넷 송수신량 ------------------------------------------------
+def _net_current(ctx: Context) -> dict | None:
+    path = ctx.netmon.get("current")
+    if path is None:
+        return None
+    try:
+        data = json.loads(Path(path).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _net_hours(ctx: Context, start: int, end: int, current: dict | None) -> tuple[dict[int, list], int | None, bool]:
+    """[start, end) 의 시간별 [받기, 보내기, 기록 길이 ms, 받기 최대 bps, 보내기 최대 bps], 첫 기록 시각, DB 유무.
+
+    hours_done 앞은 1시간 요약, 그 뒤(아직 묶지 않은 시간)는 1분 기록과 현재값 파일의 저장 전 기록으로 계산한다.
+    """
+    pending = []
+    for r in (current or {}).get("pending") or []:
+        if isinstance(r, list) and len(r) == 4 and all(isinstance(v, int) and not isinstance(v, bool) for v in r) \
+                and r[1] > 0:
+            pending.append(tuple(r))
+    path = ctx.netmon.get("db")
+    hours: dict[int, list] = {}
+    oldest = min((r[0] for r in pending), default=None)
+    if path is None or not Path(path).exists():
+        minutes = [r for r in pending if start <= r[0] < end]
+        for row in hour_rows(minutes):
+            hours[row[0]] = list(row[1:6])
+        return hours, (oldest - oldest % HOUR_MS if oldest is not None else None), False
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='hours_done'").fetchone()
+        done = int(row[0]) if row and str(row[0]).isdigit() else None
+        first = start - start % HOUR_MS
+        if done is not None:
+            for r in conn.execute("SELECT ts_ms, rx_bytes, tx_bytes, covered_ms, rx_max_bps, tx_max_bps FROM hours "
+                                  "WHERE ts_ms>=? AND ts_ms<? ORDER BY ts_ms", (first, min(end, done))):
+                hours[r[0]] = list(r[1:])
+        lo = max(first, done or 0)
+        minutes = {r[0]: r for r in conn.execute(
+            "SELECT ts_ms, span_ms, rx_bytes, tx_bytes FROM minutes WHERE ts_ms>=? AND ts_ms<?", (lo, end))}
+        firsts = [conn.execute("SELECT MIN(ts_ms) FROM hours").fetchone()[0],
+                  conn.execute("SELECT MIN(ts_ms) FROM minutes").fetchone()[0], oldest]
+    except sqlite3.OperationalError:  # 모니터가 표를 만들기 전
+        return {}, None, False
+    finally:
+        conn.close()
+    for r in pending:
+        if lo <= r[0] < end:
+            minutes.setdefault(r[0], r)
+    for row in hour_rows(sorted(minutes.values())):
+        hours[row[0]] = list(row[1:6])
+    firsts = [v for v in firsts if v is not None]
+    oldest = min(firsts) if firsts else None
+    return hours, (oldest - oldest % HOUR_MS if oldest is not None else None), True
+
+
+def _net_buckets(ctx: Context, period: str, end: int | None) -> tuple[str, list[int], int]:
+    """구간 시작 시각들과 마지막 구간의 끝. 진행 중인 시·일·주도 넣는다 (1분 기록으로 바로 보인다)."""
+    grain, _ = TREND_PERIODS[period]
+    now = ctx.now_ms
+    step, start_of = {"hour": (HOUR_MS, floor_hour), "day": (DAY_MS, kst_day_start),
+                      "week": (WEEK_MS, kst_week_start)}[grain]
+    latest = start_of(now) + step
+    stop = latest if end is None else min(latest, start_of(end))
+    count = TREND_CHUNKS[period]
+    return grain, [stop - (count - i) * step for i in range(count)], stop
+
+
+def network(ctx: Context, params: dict) -> dict:
+    period = _choice(params, "period", TREND_PERIODS, "24h")
+    grain, buckets, stop = _net_buckets(ctx, period, _end_param(params))
+    current = _net_current(ctx) if ctx.netmon.get("enabled") else None
+    hours, oldest, has_db = _net_hours(ctx, buckets[0], stop, current) if ctx.netmon.get("enabled") else ({}, None, False)
+    count, now = len(buckets), ctx.now_ms
+    ends = buckets[1:] + [stop]
+    sums = [[0, 0, 0, None, None] for _ in range(count)]
+    for hour, (rx, tx, covered, rx_max, tx_max) in hours.items():
+        i = bisect_right(buckets, hour) - 1
+        if i < 0 or hour >= stop:
+            continue
+        g = sums[i]
+        g[0] += rx
+        g[1] += tx
+        g[2] += covered
+        for k, v in ((3, rx_max), (4, tx_max)):
+            if v is not None:
+                g[k] = v if g[k] is None else max(g[k], v)
+    cov, gb_rx, gb_tx, avg_rx, avg_tx, max_rx, max_tx = [], [], [], [], [], [], []
+    for g, b, e in zip(sums, buckets, ends):
+        length = min(e, now) - b
+        if not g[2] or length <= 0:
+            for col in (cov, gb_rx, gb_tx, avg_rx, avg_tx, max_rx, max_tx):
+                col.append(None)
+            continue
+        cov.append(_r(min(1.0, g[2] / length), 2))
+        gb_rx.append(_r(g[0] / 1e9, 6))
+        gb_tx.append(_r(g[1] / 1e9, 6))
+        avg_rx.append(_r(g[0] * 8000 / g[2] / 1e6, 2))
+        avg_tx.append(_r(g[1] * 8000 / g[2] / 1e6, 2))
+        max_rx.append(_r(g[3] / 1e6, 2) if g[3] is not None else None)
+        max_tx.append(_r(g[4] / 1e6, 2) if g[4] is not None else None)
+    # 색은 범주 색 순서 (0 받기, 1 보내기). 속도 띠는 평균~최대 (약 1분 평균 속도의 최댓값)
+    volume = [{"id": "rx", "name": "받기", "color": 0, "avg": gb_rx, "min": None, "max": None, "coverage": cov},
+              {"id": "tx", "name": "보내기", "color": 1, "avg": gb_tx, "min": None, "max": None, "coverage": cov}]
+    speed = [{"id": "rx", "name": "받기", "color": 0, "avg": avg_rx, "min": avg_rx, "max": max_rx, "coverage": cov},
+             {"id": "tx", "name": "보내기", "color": 1, "avg": avg_tx, "min": avg_tx, "max": max_tx, "coverage": cov}]
+
+    view = None
+    if current is not None:
+        ts = current.get("ts_ms") if isinstance(current.get("ts_ms"), int) else 0
+        interval_ms = max(1, int(current.get("interval_s") or ctx.netmon.get("interval_s") or 60)) * 1000
+        last = current.get("last") if isinstance(current.get("last"), dict) else None
+        fresh_last = last is not None and isinstance(last.get("ts_ms"), int) and now - last["ts_ms"] <= 3 * interval_ms
+        link = current.get("link") if isinstance(current.get("link"), dict) else {}
+        today = kst_day_start(now)
+        day_hours = hours if buckets[0] <= today and stop >= now else _net_hours(ctx, today, now + 1, current)[0]
+        rx_today = sum(v[0] for h, v in day_hours.items() if h >= today)
+        tx_today = sum(v[1] for h, v in day_hours.items() if h >= today)
+
+        def mbps(value, digits):
+            n = _number(value)
+            return _r(n / 1e6, digits) if n is not None else None
+
+        view = {
+            "ts_ms": ts, "stale": now - ts > 3 * interval_ms,
+            "rx_mbps": mbps(last.get("rx_bps"), 2) if fresh_last else None,
+            "tx_mbps": mbps(last.get("tx_bps"), 2) if fresh_last else None,
+            "today_rx_gb": _r(rx_today / 1e9, 3), "today_tx_gb": _r(tx_today / 1e9, 3),
+            "link_down_mbps": mbps(link.get("down_bps"), 0), "link_up_mbps": mbps(link.get("up_bps"), 0),
+            "link_status": link.get("status") if isinstance(link.get("status"), str) else None,
+            "error": current.get("error") if isinstance(current.get("error"), str) else None,
+            "error_since": current.get("error_since") if isinstance(current.get("error_since"), int) else None,
+        }
+    return {"enabled": bool(ctx.netmon.get("enabled")), "available": has_db or current is not None,
+            "period": period, "grain": grain, "view": TREND_PERIODS[period][1], "buckets": buckets,
+            "oldest_ms": oldest, "has_older": oldest is not None and oldest < buckets[0],
+            "volume": {"unit": "GB", "digits": 2, "series": volume},
+            "speed": {"unit": "Mbps", "digits": 1, "series": speed},
+            "current": view}
+
+
 def meta(ctx: Context, params: dict) -> dict:
     rooms = ctx.rooms()
 
@@ -1186,4 +1332,5 @@ def hub_status(ctx: Context) -> dict:
 # 집계가 바뀌어야 결과가 바뀌는 API (rollup 완료 시각으로 캐시)
 ROLLUP_ROUTES = {"/api/series": series, "/api/lux-dist": lux_dist, "/api/occupancy": occupancy, "/api/plugs": plugs}
 # 현재값을 포함하는 API (짧게만 캐시)
-LIVE_ROUTES = {"/api/summary": summary, "/api/status": status, "/api/meta": meta, "/api/system": system, "/api/air": air}
+LIVE_ROUTES = {"/api/summary": summary, "/api/status": status, "/api/meta": meta, "/api/system": system, "/api/air": air,
+               "/api/network": network}

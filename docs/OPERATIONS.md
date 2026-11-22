@@ -13,7 +13,7 @@
 ### 서비스
 
 ```bash
-systemctl status stcollector stcollector-web stcollector-sysmon --no-pager
+systemctl status stcollector stcollector-web stcollector-sysmon stcollector-netmon --no-pager
 ```
 
 ```bash
@@ -39,6 +39,10 @@ journalctl -u stcollector-rollup -n 20 --no-pager
 
 ```bash
 journalctl -u stcollector-sysmon -n 20 --no-pager
+```
+
+```bash
+journalctl -u stcollector-netmon -n 20 --no-pager
 ```
 
 ### 수집 상태
@@ -104,6 +108,7 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
 | `stcollector rollup` | 집계 |
 | `stcollector web` | 대시보드 서버. systemd 서비스용 |
 | `stcollector sysmon` | RPi 상태 모니터. systemd 서비스용 |
+| `stcollector netmon` | 공유기 인터넷 사용량 기록. systemd 서비스용 |
 | `stcollector intervals` | 센서별 보고 간격 리포트 |
 | `stcollector hash-password` | 대시보드 비밀번호 해시 생성 |
 | `stcollector auth` | OAuth 방식 승인. CLI 방식에서는 안내문만 출력 |
@@ -132,17 +137,43 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
   - 고친 뒤 수집·웹 서비스 재시작
 - 항목 정의와 규칙: [ARCHITECTURE: 공기질 항목](ARCHITECTURE.md#공기질-항목-airpy)
 
+### 인터넷 사용량
+
+- 출처: 집 공유기(192.168.0.1)의 UPnP 읽기 액션. 공유기 전체 합계만, 기기별은 없음
+- 켜기 (배포 뒤 처음 한 번)
+  - `install.sh`가 설정에 `[netmon]` 절이 없으면 예시 파일의 절을 덧붙임
+  - 서비스는 사람이 켬
+
+```bash
+sudo systemctl enable --now stcollector-netmon
+```
+
+- 끄기: `[netmon] enabled = false`로 두고 서비스 재시작, 또는 `sudo systemctl disable --now stcollector-netmon`. 꺼져 있으면 대시보드 인터넷 탭에 안내만 나옴
+- 확인
+  - 대시보드 인터넷 탭의 "지금" 값이 1분 안에 바뀌는지
+  - 저장은 10분(`flush_s`)마다라서 DB에는 늦게 보임
+
+```bash
+sudo -u stcollector cat /run/stcollector-netmon/current.json
+```
+
+- 공유기를 못 찾을 때 (로그에 "공유기 송수신량을 읽지 못했습니다")
+  - 공유기 설정에서 UPnP가 켜져 있는지 확인
+  - UPnP 포트는 공유기 재시작 때 바뀔 수 있음. 먼저 SSDP로 찾고, 실패하면 `[netmon] location`을 씀. 주소가 바뀌었으면 `location`을 고치고 재시작
+- 빈 구간이 생기는 경우: 공유기 재시작(카운터가 0으로), 3분 넘는 읽기 공백, 읽기 실패. 그 구간은 0이 아니라 결측
+- 이 서비스가 멈추거나 오류가 나도 수집, 모니터, 웹은 영향 없음
+
 ### 설정 바꾸기
 
 ```bash
 sudo nano /etc/stcollector/config.toml
 ```
 
-- 수집, 웹, 모니터: 시작할 때 설정을 읽으므로 재시작 필요
+- 수집, 웹, 모니터, 인터넷 사용량: 시작할 때 설정을 읽으므로 재시작 필요
 - 집계: 실행할 때마다 설정을 읽음
 
 ```bash
-sudo systemctl restart stcollector stcollector-web stcollector-sysmon
+sudo systemctl restart stcollector stcollector-web stcollector-sysmon stcollector-netmon
 ```
 
 - SmartThings 앱에서 RPi 상태 보기: `[web] hub_status_allow`에 허브 IP를 넣고 웹 재시작. 드라이버 설치는 [edge-driver/README.md](../edge-driver/README.md)

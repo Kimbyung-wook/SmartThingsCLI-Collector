@@ -44,7 +44,7 @@ _THROTTLED_DEFAULT = "devices/platform/soc/soc:firmware/get_throttled"
 _UNIT_RE = re.compile(r"(stcollector(?:-[a-z]+)?)\.service")
 _UNIT_LABELS = {
     "stcollector": "수집", "stcollector-web": "웹",
-    "stcollector-rollup": "집계", "stcollector-sysmon": "모니터",
+    "stcollector-rollup": "집계", "stcollector-sysmon": "모니터", "stcollector-netmon": "인터넷",
 }
 _UNSAFE_NAME = re.compile(r"[^\w .:/+\-]")
 

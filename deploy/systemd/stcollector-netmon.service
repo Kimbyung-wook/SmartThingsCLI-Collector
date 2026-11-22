@@ -1,0 +1,61 @@
+[Unit]
+Description=Home router internet usage monitor (UPnP read-only actions)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=stcollector
+Group=stcollector
+WorkingDirectory=/opt/stcollector
+Environment=PYTHONPATH=/opt/stcollector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -P -m stcollector --config /etc/stcollector/config.toml netmon
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2
+Nice=5
+IOSchedulingClass=idle
+MemoryMax=48M
+
+# 쓸 수 있는 곳은 자기 저장 폴더와 tmpfs 의 현재값 파일뿐이다.
+StateDirectory=stcollector/netmon
+StateDirectoryMode=0700
+RuntimeDirectory=stcollector-netmon
+RuntimeDirectoryMode=0700
+UMask=0077
+
+# 필요 없는 자격증명 폴더를 가린다.
+InaccessiblePaths=-/var/lib/stcollector/cli -/var/lib/stcollector/token.json
+
+# 공유기(집 안 대역)와 SSDP 멀티캐스트 주소로만 IPv4 통신한다. 공유기 관리자 로그인, SNMP 는 쓰지 않는다.
+# 대역이 바뀌면 여기와 config.toml 의 [netmon] router 를 함께 고친다.
+IPAddressDeny=any
+IPAddressAllow=192.168.0.0/24 239.255.255.250/32
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+# ---- 보안 제한 ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

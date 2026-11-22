@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..config import ConfigError
 from ..db import Database
-from ..settings import SysmonSettings, WebSettings, sysmon_db_path
+from ..settings import NetmonSettings, SysmonSettings, WebSettings, netmon_db_path, sysmon_db_path
 from . import api
 from .session import LoginLimiter, Sessions, valid_hash, verify_password
 
@@ -82,7 +82,8 @@ def load_static(root: Path = STATIC_DIR) -> dict[str, StaticFile]:
 
 class App:
     def __init__(self, db_path: Path, settings: WebSettings, clock=time.time,
-                 sysmon_db: Path | None = None, sysmon_current: Path | None = None):
+                 sysmon_db: Path | None = None, sysmon_current: Path | None = None,
+                 netmon: NetmonSettings | None = None, netmon_db: Path | None = None):
         if not settings.password_hash:
             raise ConfigError(
                 "대시보드 비밀번호가 설정되지 않아 웹서버를 시작하지 않습니다. "
@@ -102,6 +103,13 @@ class App:
         self.db_uri = self.db_path.resolve().as_uri() + "?mode=ro"
         self.sysmon_db = Path(sysmon_db) if sysmon_db else sysmon_db_path(self.db_path)
         self.sysmon_current = Path(sysmon_current or SysmonSettings.runtime_file)
+        self.netmon = netmon or NetmonSettings()
+        self.netmon_db = Path(netmon_db) if netmon_db else netmon_db_path(self.db_path)
+
+    def netmon_view(self) -> dict:
+        """API 가 읽을 인터넷 사용량 위치. 꺼져 있으면 enabled False."""
+        return {"enabled": self.netmon.enabled, "db": self.netmon_db, "current": Path(self.netmon.runtime_file),
+                "interval_s": self.netmon.interval_s}
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_uri, uri=True, timeout=5)
@@ -307,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
         conn = app.connect()
         try:
             ctx = api.Context(conn, int(app.clock() * 1000), app.db_path, app.sysmon_db, app.sysmon_current,
-                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms)
+                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms, netmon=app.netmon_view())
             data = api.hub_status(ctx)
         except sqlite3.Error:
             log.exception("DB 조회 실패: %s", HUB_PATH)
@@ -337,7 +345,7 @@ class Handler(BaseHTTPRequestHandler):
         conn = app.connect()
         try:
             ctx = api.Context(conn, now_ms, app.db_path, app.sysmon_db, app.sysmon_current,
-                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms)
+                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms, netmon=app.netmon_view())
             if live:
                 version = str(now_ms // LIVE_CACHE_MS)
             else:
@@ -382,8 +390,9 @@ class Server(ThreadingHTTPServer):
         log.debug("요청 처리 중 연결 오류", exc_info=True)
 
 
-def serve(db_path: Path, settings: WebSettings, sysmon_current: str | None = None) -> int:
-    app = App(db_path, settings, sysmon_current=Path(sysmon_current) if sysmon_current else None)
+def serve(db_path: Path, settings: WebSettings, sysmon_current: str | None = None,
+          netmon: NetmonSettings | None = None) -> int:
+    app = App(db_path, settings, sysmon_current=Path(sysmon_current) if sysmon_current else None, netmon=netmon)
     server = Server((settings.host, settings.port), app)
 
     def stop(*_):
