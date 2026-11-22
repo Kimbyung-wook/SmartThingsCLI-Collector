@@ -337,8 +337,7 @@
       return [empty('공기질 센서 없음', 'SmartThings에 공기질 측정기를 연결하면 첫 집계(매시 2분) 뒤 여기에 방별 추세가 나옵니다')];
     }
     const metrics = d.metrics;  // 데이터가 있는 항목만 온다
-    // 온습도(scope=air)는 공기질 기기의 것만 따로 받는다. 방별 온습도와 섞지 않는다
-    const q = m => ({ metric: m.key, period, ...(m.scope ? { scope: m.scope } : {}) });
+    const q = m => ({ metric: m.key, period });
     const first = await Promise.all(metrics.map(m => api('/api/series', q(m))));
     const controls = h('div', { class: 'controls' }, seg('airPeriod', PERIODS, '기간'));
 

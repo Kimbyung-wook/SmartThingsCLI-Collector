@@ -122,7 +122,7 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
   - HCHO, TVOC, PM10은 추정값. 대시보드 차트 부제에 "추정값(추세용)"으로 표시
   - 같은 PM2.5를 두 capability로 보내지만 수집할 때 하나만 남김
   - 경보음 설정용 스위치는 수집하지 않아 플러그 탭에 섞이지 않음
-  - 온습도는 기본으로 공기질 탭에서만 보임
+  - 온습도는 기본으로 대시보드에 보이지 않음 (공기질 탭에도 넣지 않음)
 - 실제 이력에 이벤트가 남는지: RPi 미확인 (배포 뒤 확인)
 - 기존 설치에서 공기질을 받으려면 `/etc/stcollector/config.toml`을 고침 (방법은 [설정 바꾸기](#설정-바꾸기))
   - `[collect.attributes]`: 설정에 이 절이 있으면 코드 기본값 대신 이 절만 씀. `config.example.toml`의 공기질 줄(측정값과 등급)을 더함

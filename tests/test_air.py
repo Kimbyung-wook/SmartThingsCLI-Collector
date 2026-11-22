@@ -287,23 +287,17 @@ class AirClimateTests(AirDbMixin, unittest.TestCase):
         self.assertNotIn("humidity", room)  # 습도는 공기질 기기에만 있다 -> 방 카드에 넣지 않는다
         self.assertEqual(api.series(ctx, {"metric": "humidity", "period": "24h"})["series"], [])
 
-    def test_air_tab_shows_air_device_climate(self):
-        ctx = self.ctx()
-        d = api.air(ctx, {})
-        self.assertEqual([(m["key"], m.get("scope")) for m in d["metrics"]],
-                         [("carbonDioxide", None), ("temperature", "air"), ("humidity", "air")])
-        values = d["rooms"][0]["values"]
-        self.assertEqual((values["temperature"]["now"], values["humidity"]["now"]), (24, 52))
-        s = api.series(ctx, {"metric": "temperature", "period": "24h", "scope": "air"})
-        self.assertEqual([x["id"] for x in s["series"]], ["air-1"])
-        with self.assertRaises(api.BadRequest):
-            api.series(ctx, {"metric": "carbonDioxide", "period": "24h", "scope": "air"})
+    def test_air_tab_shows_only_air_metrics(self):
+        # 온습도는 다른 탭에서 보므로 공기질 탭에는 공기질 항목만 둔다
+        for flag in (False, True):
+            d = api.air(self.ctx(air_temp_in_rooms=flag), {})
+            self.assertEqual([m["key"] for m in d["metrics"]], ["carbonDioxide"])
+            self.assertEqual(set(d["rooms"][0]["values"]), {"carbonDioxide"})
 
     def test_switch_mixes_air_device_into_rooms(self):
         ctx = self.ctx(air_temp_in_rooms=True)
         ids = [s["id"] for s in api.series(ctx, {"metric": "temperature", "period": "24h"})["series"]]
         self.assertEqual(sorted(ids), ["air-1", "clim-1"])
-        self.assertIn("temperature", [m["key"] for m in api.air(ctx, {})["metrics"]])  # 공기질 탭에도 그대로
 
     def test_setting_is_loaded(self):
         path = self.tmp / "c.toml"

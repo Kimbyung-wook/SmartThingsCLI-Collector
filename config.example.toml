@@ -151,7 +151,7 @@ hub_status_allow = []
 
 [dashboard]
 # 공기질 측정기(공기질 capability 가 하나라도 있는 기기)의 온습도를 방별 온습도(요약·추세·이슬점)에
-# 섞을지. 기본 false: 공기질 탭에서만 본다 (PV28-CW 온도는 정수 °C 에 사용자 보정값이 들어간다).
+# 섞을지. 기본 false: 섞지 않는다 (PV28-CW 온도는 정수 °C 에 사용자 보정값이 들어간다).
 air_quality_temp_in_rooms = false
 
 [sysmon]

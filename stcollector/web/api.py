@@ -106,7 +106,6 @@ class Context:
         self.sysmon_db, self.sysmon_current = sysmon_db, sysmon_current
         self.air_temp_in_rooms = air_temp_in_rooms
         self._index = None
-        self._air_climate = None
 
     def meta(self, key: str):
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -140,23 +139,14 @@ class Context:
                 if cur is None or _series_rank(s) < _series_rank(cur):
                     best[key] = s
             index: dict[str, list[Series]] = defaultdict(list)
-            air_climate: dict[str, list[Series]] = defaultdict(list)
             for (device_id, attr), s in best.items():
-                if attr in CLIMATE_ATTRIBUTES and device_id in air_devices:
-                    air_climate[attr].append(s)  # 공기질 탭은 설정과 관계없이 늘 본다
-                    if not self.air_temp_in_rooms:
-                        continue  # 기본은 방별 온습도에 섞지 않는다
+                if attr in CLIMATE_ATTRIBUTES and device_id in air_devices and not self.air_temp_in_rooms:
+                    continue  # 기본은 공기질 기기의 온습도를 방별 온습도에 섞지 않는다
                 index[attr].append(s)
-            for items in (*index.values(), *air_climate.values()):
+            for items in index.values():
                 items.sort(key=lambda s: (s.place, s.label))
-            self._index, self._air_climate = index, air_climate
+            self._index = index
         return self._index
-
-    @property
-    def air_climate(self) -> dict[str, list[Series]]:
-        """공기질 기기의 온습도 (공기질 탭 전용)."""
-        self.index
-        return self._air_climate
 
     def rooms(self) -> list[str]:
         names = {s.place for attr in (*SENSOR_ATTRIBUTES, *AIR_METRICS) for s in self.index.get(attr, [])}
@@ -259,10 +249,6 @@ def _oldest(ctx, table, pairs) -> int | None:
 
 def series(ctx: Context, params: dict) -> dict:
     metric = _choice(params, "metric", TREND_METRICS, "temperature")
-    # scope=air: 공기질 기기의 온습도 (방별 온습도와 따로 본다)
-    scope_air = _choice(params, "scope", {"rooms", "air"}, "rooms") == "air"
-    if scope_air and metric not in CLIMATE_ATTRIBUTES:
-        raise BadRequest("scope=air 는 temperature, humidity 에만 씁니다")
     period = _choice(params, "period", TREND_PERIODS, "24h")
     grain, buckets = _buckets(ctx, period, _end_param(params))
     table = ROLLUP_TABLES[grain]
@@ -292,7 +278,7 @@ def series(ctx: Context, params: dict) -> dict:
                         "avg": avg, "min": None, "max": None, "coverage": cov})
         unit = "°C"
     else:
-        items = (ctx.air_climate if scope_air else ctx.index).get(metric, [])
+        items = ctx.index.get(metric, [])
         air = AIR_METRICS.get(metric)
         for s in items:
             pairs.append((s.device_id, metric))
@@ -680,21 +666,6 @@ def air(ctx: Context, params: dict) -> dict:
             cur = _air_now(ctx, s)
             if cur is not None:
                 card["values"][attr] = cur
-    for attr, label, unit in (("temperature", "온도", "°C"), ("humidity", "습도", "%")):
-        items = ctx.air_climate.get(attr, [])
-        if not items:
-            continue
-        # 공기질 기기의 온습도. /api/series?scope=air 로 차트를 받는다
-        metrics.append({"key": attr, "label": label, "units": [unit], "note": None, "scope": "air"})
-        for s in items:
-            latest = ctx.latest(s)
-            if latest is None or latest[1] is None:
-                continue
-            value = _to_celsius(latest[1], s.unit) if attr == "temperature" else latest[1]
-            card = cards.setdefault(s.place, {"name": s.place, "color": ctx.color(s.place, rooms), "values": {}})
-            digits = 0 if float(value).is_integer() else 1  # PV28-CW 는 정수로 보낸다
-            card["values"][attr] = {"now": _r(value, digits), "unit": unit, "digits": digits, "ts": latest[0],
-                                    "grade": None}
     return {"metrics": metrics, "rooms": sorted(cards.values(), key=lambda c: c["name"]),
             "grades": GRADE_TEXT, "closed_until": ctx.closed_until}
 
