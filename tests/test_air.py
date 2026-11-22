@@ -1,15 +1,16 @@
-"""공기질: 수집 필터, 집계, API, 항목 묶기, 데이터 없음 처리."""
+"""공기질: 수집 필터, 집계, API, 항목 묶기, 중복 이벤트, 온습도 분리, 데이터 없음 처리."""
 
 import tomllib
 import unittest
 from pathlib import Path
 
-from stcollector.air import AIR_ATTRIBUTES, AIR_GRADES, AIR_METRICS, air_digits
-from stcollector.collector import history_item_to_row
+from stcollector.air import AIR_ATTRIBUTES, AIR_GRADES, AIR_METRICS, air_digits, display_unit, keep_reading
+from stcollector.collector import Collector, history_item_to_row
 from stcollector.config import DEFAULT_ATTRIBUTES
 from stcollector.db import Database
 from stcollector.rollup import ROLLUP_ATTRIBUTES, run_rollup
-from stcollector.settings import DEFAULT_MAX_HOLD_S, RollupSettings
+from stcollector.config import ConfigError
+from stcollector.settings import DEFAULT_MAX_HOLD_S, RollupSettings, load_web_settings
 from stcollector.web import api
 from tests.helpers import TempDirMixin
 
@@ -24,8 +25,13 @@ def device(dev_id, room, caps):
             "location_id": "loc", "capabilities": set(caps)}
 
 
-def reading(dev, cap, attr, ts, num=None, text=None, unit=None):
-    return (dev, "main", cap, attr, ts, num, text, unit, "history", None)
+def reading(dev, cap, attr, ts, num=None, text=None, unit=None, component="main"):
+    return (dev, component, cap, attr, ts, num, text, unit, "history", None)
+
+
+# PV28-CW 프로필 (드라이버가 보내는 capability)
+PV28 = ["carbonDioxideMeasurement", "fineDustSensor", "dustSensor", "veryFineDustSensor", "formaldehydeMeasurement",
+        "tvocMeasurement", "temperatureMeasurement", "relativeHumidityMeasurement", "battery", "powerSource", "switch"]
 
 
 class CollectFilterTests(unittest.TestCase):
@@ -60,12 +66,46 @@ class CollectFilterTests(unittest.TestCase):
             self.assertEqual(cfg["rollup"]["max_hold_s"][attr], DEFAULT_MAX_HOLD_S[attr])
             self.assertIn(attr, ROLLUP_ATTRIBUTES)
         self.assertTrue(set(AIR_GRADES).isdisjoint(ROLLUP_ATTRIBUTES))  # 등급은 집계하지 않는다
+        self.assertIs(cfg["dashboard"]["air_quality_temp_in_rooms"], False)
 
     def test_digits(self):
         self.assertEqual(air_digits("tvocLevel", "ppm"), 3)
         self.assertEqual(air_digits("tvocLevel", "ppb"), 0)
         self.assertEqual(air_digits("formaldehydeLevel", "mg/m^3"), 3)
         self.assertEqual(air_digits("fineDustLevel", "μg/m^3"), 0)
+        self.assertEqual(air_digits("tvocLevel", "ug/m3"), 0)  # PV28-CW: 정수 μg/m³
+
+    def test_display_unit(self):
+        for raw in ("μg/m^3", "\u00b5g/m^3", "ug/m3"):
+            self.assertEqual(display_unit(raw), "μg/m³")
+        self.assertEqual(display_unit("mg/m^3"), "mg/m³")
+        self.assertEqual(display_unit("ppm"), "ppm")
+        self.assertIsNone(display_unit(None))
+        self.assertIsNone(display_unit(""))
+
+
+class KeepReadingTests(unittest.TestCase):
+    def test_pm25_duplicate_is_dropped_only_when_fine_dust_sensor_exists(self):
+        self.assertFalse(keep_reading(set(PV28), "main", "dustSensor", "fineDustLevel"))
+        self.assertTrue(keep_reading(set(PV28), "main", "fineDustSensor", "fineDustLevel"))
+        self.assertTrue(keep_reading(set(PV28), "main", "dustSensor", "dustLevel"))  # PM10 은 그대로
+        self.assertTrue(keep_reading({"dustSensor"}, "main", "dustSensor", "fineDustLevel"))  # 다른 기기의 PM2.5
+        self.assertTrue(keep_reading(None, "main", "dustSensor", "fineDustLevel"))  # 모르는 기기는 받는다
+
+    def test_air_device_setting_switch_is_dropped(self):
+        self.assertFalse(keep_reading(set(PV28), "alarmSound", "switch", "switch"))  # 경보음 설정
+        self.assertTrue(keep_reading(set(PV28), "main", "switch", "switch"))
+        self.assertTrue(keep_reading({"switch", "powerMeter"}, "outlet2", "switch", "switch"))  # 멀티탭
+
+    def test_collector_filters_with_device_capabilities(self):
+        c = Collector.__new__(Collector)  # 필터만 본다 (네트워크·DB 없이)
+        c._caps, c._caps_of = {}, None
+        c.devices = [device("air-1", "방A", PV28), device("dust-1", "방B", ["dustSensor"])]
+        self.assertFalse(c._keep(reading("air-1", "dustSensor", "fineDustLevel", NOW, 9)))
+        self.assertTrue(c._keep(reading("dust-1", "dustSensor", "fineDustLevel", NOW, 9)))
+        self.assertFalse(c._keep(reading("air-1", "switch", "switch", NOW, text="on", component="alarmSound")))
+        c.devices = [device("air-1", "방A", ["dustSensor"])]  # 기기 목록이 바뀌면 다시 본다
+        self.assertTrue(c._keep(reading("air-1", "dustSensor", "fineDustLevel", NOW, 9)))
 
 
 class AirDbMixin(TempDirMixin):
@@ -81,8 +121,8 @@ class AirDbMixin(TempDirMixin):
     def rollup(self):
         run_rollup(self.db, RollupSettings(retention_days=0), now_ms=NOW)
 
-    def ctx(self):
-        return api.Context(self.db.conn, NOW, self.path)
+    def ctx(self, **kw):
+        return api.Context(self.db.conn, NOW, self.path, **kw)
 
     def hourly(self, dev, cap, attr, values, unit):
         return [reading(dev, cap, attr, T0 + i * H, v, unit=unit) for i, v in enumerate(values)]
@@ -116,8 +156,8 @@ class AirRollupApiTests(AirDbMixin, unittest.TestCase):
         i = d["buckets"].index(T0)
         self.assertEqual(by_name["방A"]["avg"][i:i + 3], [10.0, 20.0, 30.0])
         self.assertEqual(by_name["방B"]["avg"][i:i + 3], [5.0, 6.0, 7.0])
-        self.assertEqual(d["unit"], "μg/m^3")
-        self.assertEqual(by_name["방A"]["unit"], "μg/m^3")
+        self.assertEqual(d["unit"], "μg/m³")  # 표시 단위로 다듬는다 (값은 그대로)
+        self.assertEqual(by_name["방A"]["unit"], "μg/m³")
 
     def test_mixed_units_are_kept_per_series(self):
         d = api.series(self.ctx(), {"metric": "tvocLevel", "period": "24h"})
@@ -135,7 +175,9 @@ class AirRollupApiTests(AirDbMixin, unittest.TestCase):
         self.assertEqual(tvoc["units"], ["ppb", "ppm"])
         rooms = {r["name"]: r for r in d["rooms"]}
         pm = rooms["방A"]["values"]["fineDustLevel"]
-        self.assertEqual((pm["now"], pm["unit"], pm["grade"]), (30.0, "μg/m^3", "moderate"))
+        self.assertEqual((pm["now"], pm["unit"], pm["grade"]), (30.0, "μg/m³", "moderate"))
+        self.assertEqual(tvoc["note"], "추정값(추세용)")
+        self.assertIsNone(d["metrics"][0]["note"])  # PM2.5
         self.assertIsNone(rooms["방B"]["values"]["fineDustLevel"]["grade"])
         self.assertEqual(d["grades"]["moderate"], "보통")
 
@@ -162,9 +204,116 @@ class SameDeviceBothCapabilitiesTests(AirDbMixin, unittest.TestCase):
         rows = self.db.conn.execute(
             "SELECT avg FROM rollup_hour WHERE device_id='air-1' AND attribute='fineDustLevel' ORDER BY bucket_start"
         ).fetchall()
-        self.assertEqual([r[0] for r in rows], [10.0, 10.0, 10.0])  # capability 이름순 첫 번째 (dustSensor)
+        self.assertEqual([r[0] for r in rows], [90.0, 90.0, 90.0])  # fineDustSensor 를 먼저 고른다
         d = api.series(self.ctx(), {"metric": "fineDustLevel", "period": "24h"})
         self.assertEqual(len(d["series"]), 1)
+        i = d["buckets"].index(T0)
+        self.assertEqual(d["series"][0]["avg"][i], 90.0)
+        self.assertEqual(api.air(self.ctx(), {})["rooms"][0]["values"]["fineDustLevel"]["now"], 90.0)
+
+
+class Pv28UnitsTests(AirDbMixin, unittest.TestCase):
+    def test_pv28_units_are_tidied_for_display(self):
+        self.db.upsert_devices([device("air-1", "방A", PV28)])
+        self.db.insert_readings(self.hourly("air-1", "tvocMeasurement", "tvocLevel", [320, 330, 340], "ug/m3")
+                                + self.hourly("air-1", "formaldehydeMeasurement", "formaldehydeLevel",
+                                              [0.012, 0.015, 0.0184], "mg/m^3"))
+        self.rollup()
+        tvoc = api.series(self.ctx(), {"metric": "tvocLevel", "period": "24h"})
+        hcho = api.series(self.ctx(), {"metric": "formaldehydeLevel", "period": "24h"})
+        self.assertEqual((tvoc["unit"], tvoc["series"][0]["digits"]), ("μg/m³", 0))
+        self.assertEqual((hcho["unit"], hcho["series"][0]["digits"]), ("mg/m³", 3))
+        i = hcho["buckets"].index(T0)
+        self.assertEqual(hcho["series"][0]["avg"][i + 2], 0.018)
+        stored = self.db.conn.execute("SELECT DISTINCT unit FROM readings WHERE attribute='tvocLevel'").fetchall()
+        self.assertEqual([tuple(r) for r in stored], [("ug/m3",)])  # 저장은 기기 단위 그대로
+
+
+class DuplicateEventTests(AirDbMixin, unittest.TestCase):
+    """드라이버 시작, 허브 재부팅, 앱 새로고침 때 같은 값이 다시 온다."""
+
+    def hour_row(self):
+        return self.db.conn.execute(
+            "SELECT avg, min, max, coverage FROM rollup_hour WHERE device_id='air-1' AND attribute='carbonDioxide' "
+            "AND bucket_start=?", (T0,)).fetchone()
+
+    def test_reemitted_same_value_does_not_change_rollup(self):
+        self.db.upsert_devices([device("air-1", "방A", PV28)])
+        m = 60_000
+        rows = [reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 - 10 * m, 600, unit="ppm"),
+                reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 + 20 * m, 600, unit="ppm"),  # 재시작
+                reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 + 30 * m, 600, unit="ppm"),  # 새로고침
+                reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 + 45 * m, 900, unit="ppm"),
+                reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 + 45 * m, 900, unit="ppm")]  # 똑같은 이벤트
+        self.assertEqual(self.db.insert_readings(rows), 4)  # 완전히 같은 행은 한 번만 저장
+        self.db.insert_readings(rows[1:2])  # 다음 수집에서 다시 받아도 그대로
+        self.rollup()
+        avg, lo, hi, cov = self.hour_row()
+        self.assertAlmostEqual(avg, (45 * 600 + 15 * 900) / 60)  # 재전송이 없을 때와 같다
+        self.assertEqual((lo, hi, cov), (600, 900, 1.0))
+
+    def test_gap_longer_than_max_hold_is_missing(self):
+        self.db.upsert_devices([device("air-1", "방A", PV28)])
+        # 끝난 3시간 앞에서 보고가 멈춘다 -> 2시간까지만 유지하고 그 뒤는 비어 있다
+        self.db.insert_readings([reading("air-1", "carbonDioxideMeasurement", "carbonDioxide", T0 - H, 700, unit="ppm")])
+        self.rollup()
+        rows = dict(self.db.conn.execute(
+            "SELECT bucket_start, coverage FROM rollup_hour WHERE device_id='air-1' AND attribute='carbonDioxide'"))
+        self.assertEqual(rows.get(T0), 1.0)
+        self.assertIsNone(rows.get(T0 + H))  # 1시간 + 2시간 뒤는 데이터 없음
+        self.assertEqual(DEFAULT_MAX_HOLD_S["carbonDioxide"], 7_200)
+
+
+class AirClimateTests(AirDbMixin, unittest.TestCase):
+    """공기질 기기의 온습도는 기본으로 방별 온습도와 섞지 않는다."""
+
+    def setUp(self):
+        super().setUp()
+        self.db.upsert_devices([device("clim-1", "방A", ["temperatureMeasurement", "relativeHumidityMeasurement"]),
+                                device("air-1", "방A", PV28)])
+        self.db.insert_readings(
+            self.hourly("clim-1", "temperatureMeasurement", "temperature", [21.5, 21.5, 21.5], "C")
+            + self.hourly("air-1", "temperatureMeasurement", "temperature", [24, 24, 24], "C")
+            + self.hourly("air-1", "relativeHumidityMeasurement", "humidity", [50, 51, 52], "%")
+            + self.hourly("air-1", "carbonDioxideMeasurement", "carbonDioxide", [600, 700, 800], "ppm"))
+        self.rollup()
+
+    def test_default_keeps_air_device_out_of_rooms(self):
+        ctx = self.ctx()
+        ids = [s["id"] for s in api.series(ctx, {"metric": "temperature", "period": "24h"})["series"]]
+        self.assertEqual(ids, ["clim-1"])
+        room = api.summary(ctx, {})["rooms"][0]
+        self.assertEqual(room["temperature"]["now"], 21.5)
+        self.assertNotIn("humidity", room)  # 습도는 공기질 기기에만 있다 -> 방 카드에 넣지 않는다
+        self.assertEqual(api.series(ctx, {"metric": "humidity", "period": "24h"})["series"], [])
+
+    def test_air_tab_shows_air_device_climate(self):
+        ctx = self.ctx()
+        d = api.air(ctx, {})
+        self.assertEqual([(m["key"], m.get("scope")) for m in d["metrics"]],
+                         [("carbonDioxide", None), ("temperature", "air"), ("humidity", "air")])
+        values = d["rooms"][0]["values"]
+        self.assertEqual((values["temperature"]["now"], values["humidity"]["now"]), (24, 52))
+        s = api.series(ctx, {"metric": "temperature", "period": "24h", "scope": "air"})
+        self.assertEqual([x["id"] for x in s["series"]], ["air-1"])
+        with self.assertRaises(api.BadRequest):
+            api.series(ctx, {"metric": "carbonDioxide", "period": "24h", "scope": "air"})
+
+    def test_switch_mixes_air_device_into_rooms(self):
+        ctx = self.ctx(air_temp_in_rooms=True)
+        ids = [s["id"] for s in api.series(ctx, {"metric": "temperature", "period": "24h"})["series"]]
+        self.assertEqual(sorted(ids), ["air-1", "clim-1"])
+        self.assertIn("temperature", [m["key"] for m in api.air(ctx, {})["metrics"]])  # 공기질 탭에도 그대로
+
+    def test_setting_is_loaded(self):
+        path = self.tmp / "c.toml"
+        path.write_text("[web]\n", encoding="utf-8")
+        self.assertFalse(load_web_settings(path).air_quality_temp_in_rooms)
+        path.write_text("[web]\n[dashboard]\nair_quality_temp_in_rooms = true\n", encoding="utf-8")
+        self.assertTrue(load_web_settings(path).air_quality_temp_in_rooms)
+        path.write_text("[web]\n[dashboard]\nair_quality_temp_in_rooms = \"yes\"\n", encoding="utf-8")
+        with self.assertRaises(ConfigError):
+            load_web_settings(path)
 
 
 class NoAirTests(AirDbMixin, unittest.TestCase):

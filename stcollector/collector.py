@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from .air import keep_reading
 from .auth import ReauthRequired
 from .cli_client import SmartThingsCliClient
 from .client import SmartThingsClient
@@ -117,11 +118,20 @@ class Collector:
         self.clock = clock
         self.location_id = cfg.location_id
         self.devices: list[dict] = []
+        self._caps: dict[str, set] = {}
+        self._caps_of: list | None = None
         self.mode: str | None = None if cfg.mode == "auto" else cfg.mode
         self._next_status: dict[str, float] = {}
         self._stop: threading.Event | None = None
         self._history_failures = 0
         self._stall_warned_ms: int | None = None
+
+    def _keep(self, row: Reading) -> bool:
+        """기기별로 버릴 측정값 (같은 PM2.5 중복, 공기질 기기의 설정용 switch). air.keep_reading 참고."""
+        if self._caps_of is not self.devices:  # 기기 목록이 바뀌면 다시 만든다
+            self._caps = {d["device_id"]: d["capabilities"] for d in self.devices}
+            self._caps_of = self.devices
+        return keep_reading(self._caps.get(row[0]), row[1], row[2], row[3])
 
     def _uses_cli(self) -> bool:
         return self.cfg.backend == "cli"
@@ -256,7 +266,7 @@ class Collector:
                     continue
                 newest_by_device[device_id] = max(newest_by_device.get(device_id, 0), epoch)
                 row = history_item_to_row(item, self.cfg.attributes)
-                if row:
+                if row and self._keep(row):
                     rows.append(row)
             total += self.db.insert_readings(rows)
             self.db.set_meta(key, newest)
@@ -318,7 +328,7 @@ class Collector:
                     continue
                 newest = max(newest, epoch)
                 row = history_item_to_row(item, self.cfg.attributes)
-                if row:
+                if row and self._keep(row):
                     rows.append(row)
             if reached:
                 break
@@ -346,7 +356,7 @@ class Collector:
         device_ids = [d["device_id"] for d in self.devices]
         total = 0
         for device_id, status in self.client.device_statuses(self.location_id, device_ids).items():
-            total += self.db.insert_readings(status_to_rows(device_id, status, self.cfg.attributes))
+            total += self.db.insert_readings(r for r in status_to_rows(device_id, status, self.cfg.attributes) if self._keep(r))
         interval = max(self.cfg.history_interval_s, min(self.status_interval(d) for d in self.devices))
         self._next_status = dict.fromkeys(device_ids, now + interval)
         return total
@@ -361,7 +371,7 @@ class Collector:
             if self._next_status.get(did, 0) > now:
                 continue
             status = self.client.device_status(did)
-            total += self.db.insert_readings(status_to_rows(did, status, self.cfg.attributes))
+            total += self.db.insert_readings(r for r in status_to_rows(did, status, self.cfg.attributes) if self._keep(r))
             self._next_status[did] = now + self.status_interval(dev)
         return total
 

@@ -49,8 +49,11 @@ PLUGS = [  # (이름, 방, 전력 W(0=측정 안 됨), 켜지는 시각, 꺼지�
     ("제습기", "small", 0, 12, 18, 0.2),
     ("충전 스테이션", "study", 0, 21, 8, 0.7),
 ]
-# 공기질 측정기: (방, PM2.5 를 보내는 capability, TVOC 단위, 공기질 지수·CO2 등급을 주는지)
-AIR = [("living", "dustSensor", "ppb", True), ("bed", "fineDustSensor", "ppm", False)]
+# 공기질 측정기 (PV28-CW 형태): (방, 온도 보정값 °C). CO·공기질 지수·등급은 보내지 않는다 (화면에서 숨김 확인용)
+AIR = [("living", 1), ("bed", -1)]
+AIR_CAPS = {"carbonDioxideMeasurement", "fineDustSensor", "dustSensor", "veryFineDustSensor",
+            "formaldehydeMeasurement", "tvocMeasurement", "temperatureMeasurement", "relativeHumidityMeasurement",
+            "battery"}
 
 
 def outages(now_ms: int) -> list[tuple[int, int]]:
@@ -122,12 +125,9 @@ def devices():
         caps = {"switch"} | ({"powerMeter", "energyMeter"} if watt else set())
         out.append({"device_id": device_id("plug", i), "label": label, "name": "스마트플러그",
                     "room_id": room, "room_name": name, "location_id": "fake", "capabilities": caps})
-    for i, (room, pm_cap, _tvoc_unit, extra) in enumerate(AIR):
+    for i, (room, _offset) in enumerate(AIR):
         name = next(r["name"] for r in ROOMS if r["id"] == room)
-        caps = {pm_cap, "dustSensor", "veryFineDustSensor", "carbonDioxideMeasurement", "tvocMeasurement",
-                "formaldehydeMeasurement", "fineDustHealthConcern"}
-        if extra:
-            caps |= {"airQualitySensor", "carbonDioxideHealthConcern"}
+        caps = set(AIR_CAPS)
         out.append({"device_id": device_id("airq", i), "label": f"{name} 공기질", "name": "공기질 측정기",
                     "room_id": room, "room_name": name, "location_id": "fake", "capabilities": caps})
     return out
@@ -310,28 +310,21 @@ def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14, minut
     return total
 
 
-def _pm_grade(pm25: float) -> str:
-    return "good" if pm25 <= 15 else "moderate" if pm25 <= 35 else "unhealthy" if pm25 <= 75 else "veryUnhealthy"
-
-
-def _co2_grade(co2: float) -> str:
-    return "good" if co2 <= 1000 else "moderate" if co2 <= 2000 else "unhealthy"
-
-
 def generate_air(db: Database, days: int, seed: int, now_ms: int) -> int:
-    """공기질 측정기 2기. 기존 측정값과 난수를 나누지 않아 다른 기기의 가짜 값은 그대로다."""
+    """공기질 측정기 2기 (PV28-CW 형태). 기존 측정값과 난수를 나누지 않아 다른 기기의 가짜 값은 그대로다.
+
+    드라이버처럼 30초마다 읽어 바뀐 값만 보내고(허용 오차 없음), 공백 뒤 다시 시작하면 모든 값을 한 번 보낸다.
+    PM2.5 의 중복(dustSensor.fineDustLevel)은 수집 필터가 버린 뒤의 모습으로 저장한다.
+    """
     rng = random.Random(seed + 2)
-    step = 5 * MIN
+    step = 5 * MIN  # 30초 폴링을 5분 간격으로 줄여 만든다 (CO2 는 거의 매번 바뀐다)
     start = (now_ms - days * DAY) // (6 * HOUR) * (6 * HOUR)
     gaps = outages(now_ms)
     rows, total = [], 0
-    for i, (room, pm_cap, tvoc_unit, extra) in enumerate(AIR):
+    for i, (room, temp_offset) in enumerate(AIR):
         dev = device_id("airq", i)
-        rep = {k: Reporter(th, 30 * MIN, relative=rel) for k, th, rel in (
-            ("pm25", 2, False), ("pm10", 3, False), ("pm1", 2, False), ("co2", 30, False),
-            ("tvoc", 0.15, True), ("hcho", 0.004, False), ("aqi", 3, False))}
-        grade, co2_grade, grade_ts = None, None, 0
-        outdoor_pm, co2, spike = 10.0, 450.0, 0.0
+        last: dict[str, object] = {}
+        outdoor_pm, co2, spike, battery = 10.0, 450.0, 0.0, 100
         t = start
         while t < now_ms:
             hod = hour_of_day(t)
@@ -343,33 +336,31 @@ def generate_air(db: Database, days: int, seed: int, now_ms: int) -> int:
             asleep = hod >= 23 or hod < 7
             target = (1250 if asleep else 520) if room == "bed" else (950 if 18.5 <= hod < 23 else 480)
             co2 = max(400.0, co2 + (target - co2) * 0.12 + rng.gauss(0, 8))
-            tvoc_ppb = max(20.0, 110 + 2.5 * spike + (60 if room == "bed" and asleep else 0) + rng.gauss(0, 12))
+            tvoc = max(20.0, 250 + 6 * spike + (150 if room == "bed" and asleep else 0) + rng.gauss(0, 25))
             hcho = max(0.0, 0.018 + 0.006 * math.sin(2 * math.pi * (hod - 15) / 24) + rng.gauss(0, 0.002))
-            values = {
-                "pm25": (pm_cap, "fineDustLevel", round(pm25), "μg/m^3"),
-                "pm10": ("dustSensor", "dustLevel", round(pm25 * 1.45 + rng.uniform(0, 3)), "μg/m^3"),
-                "pm1": ("veryFineDustSensor", "veryFineDustLevel", round(pm25 * 0.68), "μg/m^3"),
+            temp = 22 + 2 * math.sin(2 * math.pi * (hod - 9) / 24) + rng.gauss(0, 0.3) + temp_offset
+            if rng.random() < 0.0005:
+                battery = max(5, battery - 1)
+            values = {  # (capability, 속성, 값, 단위) — PV28-CW 드라이버가 보내는 단위 그대로
                 "co2": ("carbonDioxideMeasurement", "carbonDioxide", round(co2), "ppm"),
-                "tvoc": ("tvocMeasurement", "tvocLevel",
-                         round(tvoc_ppb) if tvoc_unit == "ppb" else round(tvoc_ppb / 1000, 3), tvoc_unit),
+                "pm25": ("fineDustSensor", "fineDustLevel", round(pm25), "μg/m^3"),
+                "pm1": ("veryFineDustSensor", "veryFineDustLevel", round(pm25 * 0.68), "μg/m^3"),
+                "pm10": ("dustSensor", "dustLevel", round(pm25 * 1.45 + rng.uniform(0, 3)), "μg/m^3"),
                 "hcho": ("formaldehydeMeasurement", "formaldehydeLevel", round(hcho, 3), "mg/m^3"),
+                "tvoc": ("tvocMeasurement", "tvocLevel", round(tvoc), "ug/m3"),
+                "temp": ("temperatureMeasurement", "temperature", round(temp), "C"),
+                "hum": ("relativeHumidityMeasurement", "humidity", round(48 + 6 * math.sin(2 * math.pi * hod / 24)
+                                                                          + rng.gauss(0, 1)), "%"),
+                "bat": ("battery", "battery", battery, "%"),
             }
-            if extra:
-                values["aqi"] = ("airQualitySensor", "airQuality", min(100, round(pm25 * 2.2 + (co2 - 400) / 40)), "CAQI")
-            if not any(a <= t < b for a, b in gaps):
-                jitter = rng.randint(0, 120_000)
+            if any(a <= t < b for a, b in gaps):
+                last.clear()  # 꺼짐. 다시 켜지면 드라이버가 모든 값을 다시 보낸다
+            else:
+                jitter = rng.randint(0, 25_000)
                 for n, (key, (cap, attr, value, unit)) in enumerate(values.items()):
-                    if rep[key].should_report(t, value):
+                    if last.get(key) != value:
                         rows.append(row(dev, cap, attr, t + jitter + n, value, unit=unit))
-                        rep[key].mark(t, value)
-                g = _pm_grade(pm25)
-                if g != grade or t - grade_ts >= 6 * HOUR:
-                    rows.append(row(dev, "fineDustHealthConcern", "fineDustHealthConcern", t + jitter + 20, text=g))
-                    grade, grade_ts = g, t
-                if extra and _co2_grade(co2) != co2_grade:
-                    co2_grade = _co2_grade(co2)
-                    rows.append(row(dev, "carbonDioxideHealthConcern", "carbonDioxideHealthConcern", t + jitter + 21,
-                                    text=co2_grade))
+                        last[key] = value
             if len(rows) >= 20_000:
                 total += db.insert_readings(rows)
                 rows = []

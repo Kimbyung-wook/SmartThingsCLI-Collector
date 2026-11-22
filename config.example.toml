@@ -62,13 +62,13 @@ powerMeter = 60
 energyMeter = 900
 battery = 21600
 # 공기질 (아래 [collect.attributes] 참고)
-dustSensor = 300
-fineDustSensor = 300
-veryFineDustSensor = 300
 carbonDioxideMeasurement = 300
-carbonMonoxideMeasurement = 300
-tvocMeasurement = 300
+fineDustSensor = 300
+dustSensor = 300
+veryFineDustSensor = 300
 formaldehydeMeasurement = 300
+tvocMeasurement = 300
+carbonMonoxideMeasurement = 300
 airQualitySensor = 300
 
 # 수집할 capability -> 속성
@@ -82,18 +82,19 @@ switch = ["switch"]
 powerMeter = ["power"]
 energyMeter = ["energy"]
 battery = ["battery"]
-# 공기질 측정값. 기기마다 쓰는 capability 가 달라 후보를 모두 둔다 (없는 것은 무시된다).
-# PM2.5 는 dustSensor.fineDustLevel 과 fineDustSensor.fineDustLevel 어느 쪽으로 와도 한 항목으로 본다.
-# 단위는 기기가 보낸 값을 그대로 저장하고 표시한다 (TVOC·HCHO 는 ppm, ppb, mg/m^3 등 기기마다 다름).
-dustSensor = ["dustLevel", "fineDustLevel"]          # PM10, PM2.5
-fineDustSensor = ["fineDustLevel"]                   # PM2.5
-veryFineDustSensor = ["veryFineDustLevel"]           # PM1.0
-carbonDioxideMeasurement = ["carbonDioxide"]         # CO2
-carbonMonoxideMeasurement = ["carbonMonoxideLevel"]  # CO
-tvocMeasurement = ["tvocLevel"]                      # TVOC
-formaldehydeMeasurement = ["formaldehydeLevel"]      # HCHO
-airQualitySensor = ["airQuality"]                    # 공기질 지수
-# 기기가 주는 등급(좋음~위험). 집계하지 않고 최신값만 표시한다.
+# 공기질 측정값. 기준 기기는 PV28-CW (Edge 드라이버, 단위는 기기가 보낸 그대로 저장).
+# 화면에서만 단위를 다듬는다 (μg/m^3, ug/m3 -> μg/m³, mg/m^3 -> mg/m³). 항목 정의는 stcollector/air.py.
+carbonDioxideMeasurement = ["carbonDioxide"]         # CO2, ppm
+fineDustSensor = ["fineDustLevel"]                   # PM2.5, μg/m^3
+# PV28-CW 는 PM2.5 를 dustSensor.fineDustLevel 로도 보낸다. fineDustSensor 가 있는 기기에서는
+# 수집할 때 버리고, fineDustSensor 가 없는 기기에서만 PM2.5 로 쓴다.
+dustSensor = ["dustLevel", "fineDustLevel"]          # PM10 (추정값), PM2.5
+veryFineDustSensor = ["veryFineDustLevel"]           # PM1.0, μg/m^3
+formaldehydeMeasurement = ["formaldehydeLevel"]      # HCHO (추정값), mg/m^3
+tvocMeasurement = ["tvocLevel"]                      # TVOC (추정값), ug/m3
+carbonMonoxideMeasurement = ["carbonMonoxideLevel"]  # CO. PV28-CW 에는 없음, 다른 기기용
+airQualitySensor = ["airQuality"]                    # 공기질 지수. PV28-CW 는 보내지 않음, 다른 기기용
+# 기기가 주는 등급(좋음~위험). 집계하지 않고 최신값만 표시한다. PV28-CW 는 보내지 않음, 다른 기기용.
 dustHealthConcern = ["dustHealthConcern"]
 fineDustHealthConcern = ["fineDustHealthConcern"]
 veryFineDustHealthConcern = ["veryFineDustHealthConcern"]
@@ -122,14 +123,16 @@ energy = 21600
 motion = 604800
 presence = 604800
 switch = 31536000
-# 공기질 측정값
-veryFineDustLevel = 7200
-fineDustLevel = 7200
-dustLevel = 7200
+# 공기질 측정값. PV28-CW 드라이버는 30초마다 읽어 바뀐 값만 보낸다. CO2 는 거의 매번 바뀌어
+# 2시간 넘게 이벤트가 없으면 끊긴 것으로 본다. 깨끗한 공기에서 PM·HCHO·TVOC 가 2시간 넘게 그대로라
+# 빈 구간이 생기면 그 항목만 21600(6시간)으로 늘린다.
 carbonDioxide = 7200
-carbonMonoxideLevel = 7200
-tvocLevel = 7200
+fineDustLevel = 7200
+veryFineDustLevel = 7200
+dustLevel = 7200
 formaldehydeLevel = 7200
+tvocLevel = 7200
+carbonMonoxideLevel = 7200
 airQuality = 7200
 
 [web]
@@ -145,6 +148,11 @@ session_days = 30
 # 대역이 아니라 IP 주소 하나씩 적는다. 비워 두면 그 경로는 모두에게 404 다.
 # 공유기에서 허브 IP를 고정(DHCP 예약)한 뒤 넣는다. 자세한 내용: edge-driver/README.md
 hub_status_allow = []
+
+[dashboard]
+# 공기질 측정기(공기질 capability 가 하나라도 있는 기기)의 온습도를 방별 온습도(요약·추세·이슬점)에
+# 섞을지. 기본 false: 공기질 탭에서만 본다 (PV28-CW 온도는 정수 °C 에 사용자 보정값이 들어간다).
+air_quality_temp_in_rooms = false
 
 [sysmon]
 # RPi 상태 모니터. sysfs 와 /proc 만 읽고, 수집 DB 와 분리된 sysmon.db 에 저장한다.

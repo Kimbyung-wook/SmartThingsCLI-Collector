@@ -49,6 +49,8 @@ class WebSettings:
     session_days: int
     # SmartThings 허브가 /hub/status 를 읽을 수 있는 주소. 비어 있으면 그 경로를 닫는다.
     hub_status_allow: tuple = ()
+    # [dashboard] 공기질 기기의 온습도를 방별 온습도(요약·추세)에 섞을지. 기본은 공기질 탭에서만 본다.
+    air_quality_temp_in_rooms: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,7 +111,8 @@ def load_sysmon_settings(path: str | os.PathLike) -> SysmonSettings:
 
 
 def load_web_settings(path: str | os.PathLike) -> WebSettings:
-    raw = _read(path).get("web", {})
+    data = _read(path)
+    raw = data.get("web", {})
     port = raw.get("port", 8080)
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         raise ConfigError(f"web.port 는 1~65535 정수여야 합니다 (현재: {port!r})")
@@ -127,6 +130,9 @@ def load_web_settings(path: str | os.PathLike) -> WebSettings:
         hub_addrs = tuple(ipaddress.ip_address(a) for a in hub)
     except (TypeError, ValueError) as e:
         raise ConfigError(f"web.hub_status_allow 형식 오류 (대역이 아니라 주소 하나씩 적습니다): {e}") from None
+    air_temp = data.get("dashboard", {}).get("air_quality_temp_in_rooms", False)
+    if not isinstance(air_temp, bool):
+        raise ConfigError("dashboard.air_quality_temp_in_rooms 는 true 또는 false 여야 합니다")
     return WebSettings(
         host=str(raw.get("host", "0.0.0.0")),
         port=port,
@@ -134,4 +140,5 @@ def load_web_settings(path: str | os.PathLike) -> WebSettings:
         allowed_networks=nets,
         session_days=days,
         hub_status_allow=hub_addrs,
+        air_quality_temp_in_rooms=air_temp,
     )

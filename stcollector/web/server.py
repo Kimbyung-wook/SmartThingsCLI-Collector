@@ -306,7 +306,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         conn = app.connect()
         try:
-            ctx = api.Context(conn, int(app.clock() * 1000), app.db_path, app.sysmon_db, app.sysmon_current)
+            ctx = api.Context(conn, int(app.clock() * 1000), app.db_path, app.sysmon_db, app.sysmon_current,
+                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms)
             data = api.hub_status(ctx)
         except sqlite3.Error:
             log.exception("DB 조회 실패: %s", HUB_PATH)
@@ -335,7 +336,8 @@ class Handler(BaseHTTPRequestHandler):
         now_ms = int(app.clock() * 1000)
         conn = app.connect()
         try:
-            ctx = api.Context(conn, now_ms, app.db_path, app.sysmon_db, app.sysmon_current)
+            ctx = api.Context(conn, now_ms, app.db_path, app.sysmon_db, app.sysmon_current,
+                              air_temp_in_rooms=app.settings.air_quality_temp_in_rooms)
             if live:
                 version = str(now_ms // LIVE_CACHE_MS)
             else:

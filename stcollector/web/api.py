@@ -17,7 +17,8 @@ import time
 from collections import defaultdict
 
 from .. import __version__
-from ..air import AIR_GRADES, AIR_METRICS, GRADE_TEXT, air_digits
+from ..air import (AIR_GRADES, AIR_METRICS, CLIMATE_ATTRIBUTES, GRADE_TEXT, air_digits, capability_rank,
+                   display_unit, is_air_device)
 from pathlib import Path
 
 from ..rollup import (
@@ -100,10 +101,12 @@ class Series:
 
 class Context:
     def __init__(self, conn, now_ms: int, db_path: Path, sysmon_db: Path | None = None,
-                 sysmon_current: Path | None = None):
+                 sysmon_current: Path | None = None, air_temp_in_rooms: bool = False):
         self.conn, self.now_ms, self.db_path = conn, now_ms, db_path
         self.sysmon_db, self.sysmon_current = sysmon_db, sysmon_current
+        self.air_temp_in_rooms = air_temp_in_rooms
         self._index = None
+        self._air_climate = None
 
     def meta(self, key: str):
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -124,24 +127,36 @@ class Context:
     def index(self) -> dict[str, list[Series]]:
         if self._index is None:
             best: dict[tuple[str, str], Series] = {}
+            air_devices = set()
             for row in self.conn.execute(
-                "SELECT s.device_id, s.component, s.capability, s.attribute, s.unit, d.label, d.room_name, d.room_id "
-                "FROM rollup_series s LEFT JOIN devices d USING(device_id)"
+                "SELECT s.device_id, s.component, s.capability, s.attribute, s.unit, d.label, d.room_name, d.room_id, "
+                "d.capabilities_json FROM rollup_series s LEFT JOIN devices d USING(device_id)"
             ):
                 s = Series(row)
+                if row[8] and is_air_device(_json_list(row[8])):
+                    air_devices.add(s.device_id)
                 key = (s.device_id, s.attribute)
                 cur = best.get(key)
-                if cur is None or (s.component != "main", s.component, s.capability) < (
-                    cur.component != "main", cur.component, cur.capability
-                ):
+                if cur is None or _series_rank(s) < _series_rank(cur):
                     best[key] = s
             index: dict[str, list[Series]] = defaultdict(list)
-            for (_, attr), s in best.items():
+            air_climate: dict[str, list[Series]] = defaultdict(list)
+            for (device_id, attr), s in best.items():
+                if attr in CLIMATE_ATTRIBUTES and device_id in air_devices:
+                    air_climate[attr].append(s)  # 공기질 탭은 설정과 관계없이 늘 본다
+                    if not self.air_temp_in_rooms:
+                        continue  # 기본은 방별 온습도에 섞지 않는다
                 index[attr].append(s)
-            for items in index.values():
+            for items in (*index.values(), *air_climate.values()):
                 items.sort(key=lambda s: (s.place, s.label))
-            self._index = index
+            self._index, self._air_climate = index, air_climate
         return self._index
+
+    @property
+    def air_climate(self) -> dict[str, list[Series]]:
+        """공기질 기기의 온습도 (공기질 탭 전용)."""
+        self.index
+        return self._air_climate
 
     def rooms(self) -> list[str]:
         names = {s.place for attr in (*SENSOR_ATTRIBUTES, *AIR_METRICS) for s in self.index.get(attr, [])}
@@ -180,6 +195,19 @@ class Context:
                 if s.device_id == raw:
                     return s
         raise BadRequest("알 수 없는 device 입니다")
+
+
+def _series_rank(s: Series):
+    """(기기, 속성)마다 하나 고르는 순서: main 컴포넌트, air.capability_rank, 이름순. rollup._primary_series 와 같다."""
+    return (s.component != "main", s.component, capability_rank(s.capability), s.capability)
+
+
+def _json_list(text: str) -> list:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return []
+    return value if isinstance(value, list) else []
 
 
 def dew_point(temp_c: float, rh: float):
@@ -231,6 +259,10 @@ def _oldest(ctx, table, pairs) -> int | None:
 
 def series(ctx: Context, params: dict) -> dict:
     metric = _choice(params, "metric", TREND_METRICS, "temperature")
+    # scope=air: 공기질 기기의 온습도 (방별 온습도와 따로 본다)
+    scope_air = _choice(params, "scope", {"rooms", "air"}, "rooms") == "air"
+    if scope_air and metric not in CLIMATE_ATTRIBUTES:
+        raise BadRequest("scope=air 는 temperature, humidity 에만 씁니다")
     period = _choice(params, "period", TREND_PERIODS, "24h")
     grain, buckets = _buckets(ctx, period, _end_param(params))
     table = ROLLUP_TABLES[grain]
@@ -260,13 +292,13 @@ def series(ctx: Context, params: dict) -> dict:
                         "avg": avg, "min": None, "max": None, "coverage": cov})
         unit = "°C"
     else:
-        items = ctx.index.get(metric, [])
+        items = (ctx.air_climate if scope_air else ctx.index).get(metric, [])
         air = AIR_METRICS.get(metric)
         for s in items:
             pairs.append((s.device_id, metric))
             rows = _rows_by_bucket(ctx, table, s.device_id, metric, start, last)
             # 공기질은 기기가 보낸 단위를 그대로 쓴다. 기기마다 단위가 다를 수 있어 계열마다 싣는다
-            s_unit = (s.unit or air[1]) if air else None
+            s_unit = display_unit(s.unit or air[1]) if air else None
             d = air_digits(metric, s_unit) if air else digits
             avg, lo, hi, cov = [], [], [], []
             for b in buckets:
@@ -282,7 +314,7 @@ def series(ctx: Context, params: dict) -> dict:
             out.append(entry)
         if air:
             units = {x["unit"] for x in out}
-            unit = units.pop() if len(units) == 1 else (None if units else air[1])  # 여럿이면 계열별 unit 을 본다
+            unit = units.pop() if len(units) == 1 else (None if units else display_unit(air[1]))  # 여럿이면 계열별 unit
             digits = max((x["digits"] for x in out), default=air_digits(metric, air[1]))
         else:
             unit = {"temperature": "°C", "humidity": "%", "illuminance": "lx"}[metric]
@@ -627,7 +659,7 @@ def _air_now(ctx: Context, s: Series) -> dict | None:
     latest = ctx.latest(s)
     if latest is None or latest[1] is None or not math.isfinite(latest[1]):
         return None
-    unit = s.unit or AIR_METRICS[s.attribute][1]
+    unit = display_unit(s.unit or AIR_METRICS[s.attribute][1])
     digits = air_digits(s.attribute, unit)
     return {"now": _r(latest[1], digits), "unit": unit, "digits": digits, "ts": latest[0],
             "grade": _air_grade(ctx, s)}
@@ -637,17 +669,32 @@ def air(ctx: Context, params: dict) -> dict:
     """공기질 탭의 틀: 데이터가 있는 항목(단위별)과 방별 현재값. 차트는 /api/series 로 받는다."""
     rooms = ctx.rooms()
     metrics, cards = [], {}
-    for attr, (label, default_unit) in AIR_METRICS.items():
+    for attr, (label, default_unit, note) in AIR_METRICS.items():
         items = ctx.index.get(attr, [])
         if not items:
             continue  # 데이터가 없는 항목은 숨긴다
-        units = sorted({s.unit or default_unit for s in items}, key=lambda u: u or "")
-        metrics.append({"key": attr, "label": label, "units": units})
+        units = sorted({display_unit(s.unit or default_unit) for s in items}, key=lambda u: u or "")
+        metrics.append({"key": attr, "label": label, "units": units, "note": note})
         for s in items:
             card = cards.setdefault(s.place, {"name": s.place, "color": ctx.color(s.place, rooms), "values": {}})
             cur = _air_now(ctx, s)
             if cur is not None:
                 card["values"][attr] = cur
+    for attr, label, unit in (("temperature", "온도", "°C"), ("humidity", "습도", "%")):
+        items = ctx.air_climate.get(attr, [])
+        if not items:
+            continue
+        # 공기질 기기의 온습도. /api/series?scope=air 로 차트를 받는다
+        metrics.append({"key": attr, "label": label, "units": [unit], "note": None, "scope": "air"})
+        for s in items:
+            latest = ctx.latest(s)
+            if latest is None or latest[1] is None:
+                continue
+            value = _to_celsius(latest[1], s.unit) if attr == "temperature" else latest[1]
+            card = cards.setdefault(s.place, {"name": s.place, "color": ctx.color(s.place, rooms), "values": {}})
+            digits = 0 if float(value).is_integer() else 1  # PV28-CW 는 정수로 보낸다
+            card["values"][attr] = {"now": _r(value, digits), "unit": unit, "digits": digits, "ts": latest[0],
+                                    "grade": None}
     return {"metrics": metrics, "rooms": sorted(cards.values(), key=lambda c: c["name"]),
             "grades": GRADE_TEXT, "closed_until": ctx.closed_until}
 

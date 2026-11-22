@@ -18,7 +18,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from .air import AIR_METRICS
+from .air import AIR_METRICS, capability_rank
 from .settings import RollupSettings
 
 log = logging.getLogger(__name__)
@@ -179,7 +179,9 @@ def _primary_series(conn) -> tuple[dict[tuple[str, str], Series], list[Series]]:
         grouped[(r[0], r[3])].append(Series(r[0], r[1], r[2], r[3]))
     primary = {}
     for key, items in grouped.items():
-        primary[key] = min(items, key=lambda s: (s.component != "main", s.component, s.capability))
+        # 같은 속성이 여러 capability 로 오면 air.capability_rank 순 (PM2.5 는 fineDustSensor 먼저)
+        primary[key] = min(items, key=lambda s: (s.component != "main", s.component,
+                                                 capability_rank(s.capability), s.capability))
     return primary, list(primary.values())
 
 

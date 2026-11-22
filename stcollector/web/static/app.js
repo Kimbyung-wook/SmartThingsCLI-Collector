@@ -186,7 +186,7 @@
   /* 함께 움직이는 여러 차트의 묶음 하나 = 항목별 /api/series 응답 배열 */
   const multiChunk = list => ({ ...seriesChunk(list[0]), data: list, hasOlder: list.some(x => x.has_older),
     oldest: list.reduce((m, x) => (x.oldest_ms == null ? m : m == null ? x.oldest_ms : Math.min(m, x.oldest_ms)), null) });
-  /* 공기질 단위는 기기가 보낸 값을 그대로 쓰고, ^3 만 위 첨자로 보여 준다 */
+  /* 공기질 단위는 서버가 다듬어 준다 (μg/m³ 등). 다듬지 않은 단위가 와도 ^3 은 위 첨자로 보여 준다 */
   const unitText = u => (u ? String(u).replace(/\^3/g, '³').replace(/\^2/g, '²') : '');
   const airValue = (v, grades) => (v ? fmt(v.now, v.digits) + (v.unit ? ' ' + unitText(v.unit) : '') : '—')
     + (v && v.grade && grades && grades[v.grade] ? ` (${grades[v.grade]})` : '');
@@ -337,7 +337,9 @@
       return [empty('공기질 센서 없음', 'SmartThings에 공기질 측정기를 연결하면 첫 집계(매시 2분) 뒤 여기에 방별 추세가 나옵니다')];
     }
     const metrics = d.metrics;  // 데이터가 있는 항목만 온다
-    const first = await Promise.all(metrics.map(m => api('/api/series', { metric: m.key, period })));
+    // 온습도(scope=air)는 공기질 기기의 것만 따로 받는다. 방별 온습도와 섞지 않는다
+    const q = m => ({ metric: m.key, period, ...(m.scope ? { scope: m.scope } : {}) });
+    const first = await Promise.all(metrics.map(m => api('/api/series', q(m))));
     const controls = h('div', { class: 'controls' }, seg('airPeriod', PERIODS, '기간'));
 
     const swatchName = r => { const k = h('i', { class: 'sw' }); k.style.background = color(r.color); return h('span', { class: 'room-name' }, k, h('span', { text: r.name })); };
@@ -347,7 +349,7 @@
 
     const g = Charts.pan({
       view: PAN_VIEW[period], first: multiChunk(first), range: rangeText(period === '24h'),
-      load: end => Promise.all(metrics.map(m => api('/api/series', withEnd({ metric: m.key, period }, end)))).then(multiChunk),
+      load: end => Promise.all(metrics.map(m => api('/api/series', withEnd(q(m), end)))).then(multiChunk),
       merge: list => metrics.map((_, k) => mergeSeries(list.map(x => x[k]))),
     });
     const legend = h('div', { class: 'legend' }, d.rooms.map(r => legendLine(color(r.color), r.name)),
@@ -356,20 +358,20 @@
     // 항목마다 차트 하나. 같은 항목이라도 기기마다 단위가 다르면 단위별로 나눈다 (한 축에 섞지 않는다)
     metrics.forEach((m, k) => m.units.forEach(u => {
       const title = m.label + (u ? ` (${unitText(u)})` : '');
-      const sec = section(title), host = chartHost();
-      const pick = mc => mc.series.filter(x => (x.unit || null) === (u || null));
-      const digitsOf = rs => rs.reduce((a, x) => Math.max(a, x.digits || 0), 0);
+      const sec = section(title, m.note), host = chartHost();  // 부제: 값 품질 메모 (예: 추정값(추세용))
+      const pick = mc => (m.scope ? mc.series : mc.series.filter(x => (x.unit || null) === (u || null)));
+      const digitsOf = (rs, mc) => (m.scope ? mc.digits : rs.reduce((a, x) => Math.max(a, x.digits || 0), 0));
       later(() => g.add(host, mm => {
         const mc = mm[k], rs = pick(mc);
         return {
           xs: mc.buckets, xend: mc.xend, tip: i => bucketTip(mc.buckets[i], mc.grain), series: rs, band: true,
-          unit: unitText(u), digits: digitsOf(rs), height: W => (W < 520 ? 190 : 240),
+          unit: unitText(u), digits: digitsOf(rs, mc), height: W => (W < 520 ? 190 : 240),
           ...(mc.grain === 'hour' ? { x: i => hourTick(mc.buckets[i]), ...TIME_TICKS } : { x: i => bucketX(mc.buckets[i], mc.grain) }),
           aria: `방별 ${title} 차트. 선은 평균, 띠는 최소~최대. 옆으로 끌면 이전 기간. 값은 아래 표로도 볼 수 있습니다.`,
         };
       }, 'air-' + m.key + '-' + (u || '')));
       const tv = tableView(() => {  // 지금 보이는 구간만
-        const mc = g.merged[k], rs = pick(mc), dg = digitsOf(rs);
+        const mc = g.merged[k], rs = pick(mc), dg = digitsOf(rs, mc);
         const cell = (r, i) => fmt(r.avg[i], dg) + (r.min && r.min[i] != null ? ` (${fmt(r.min[i], dg)}~${fmt(r.max[i], dg)})` : '');
         return table(['구간', ...rs.map(r => r.name + ' 평균 (최소~최대)')],
           visibleIndex(mc.buckets, mc.xend, g).map(i => [bucketTip(mc.buckets[i], mc.grain), ...rs.map(r => cell(r, i))]), i => i > 0);
