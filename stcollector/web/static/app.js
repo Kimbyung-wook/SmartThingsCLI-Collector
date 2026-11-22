@@ -336,15 +336,17 @@
     if (!d.metrics.length) {
       return [empty('공기질 센서 없음', 'SmartThings에 공기질 측정기를 연결하면 첫 집계(매시 2분) 뒤 여기에 방별 추세가 나옵니다')];
     }
-    const metrics = d.metrics;  // 데이터가 있는 항목만 온다
+    const metrics = d.metrics;  // 데이터가 있는 항목. 차트를 받는다
+    // 표와 차트 자리 순서: 데이터 있는 항목과 예비 자리(reserved)를 서버가 정한 순서로 섞는다
+    const slots = [...metrics, ...(d.reserved || []).map(r => ({ ...r, empty: true }))].sort((a, b) => a.order - b.order);
     const q = m => ({ metric: m.key, period });
     const first = await Promise.all(metrics.map(m => api('/api/series', q(m))));
     const controls = h('div', { class: 'controls' }, seg('airPeriod', PERIODS, '기간'));
 
     const swatchName = r => { const k = h('i', { class: 'sw' }); k.style.background = color(r.color); return h('span', { class: 'room-name' }, k, h('span', { text: r.name })); };
     const cur = section('방별 현재값', '기기가 등급을 주면 괄호 안에 그대로 표시');
-    cur.append(table(['방', ...metrics.map(m => m.label)],
-      d.rooms.map(r => [swatchName(r), ...metrics.map(m => airValue(r.values[m.key], d.grades))]), i => i > 0));
+    cur.append(table(['방', ...slots.map(m => m.label)],
+      d.rooms.map(r => [swatchName(r), ...slots.map(m => airValue(r.values[m.key], d.grades))]), i => i > 0));
 
     const g = Charts.pan({
       view: PAN_VIEW[period], first: multiChunk(first), range: rangeText(period === '24h'),
@@ -355,7 +357,16 @@
       h('span', null, h('i', { class: 'band-key' }), '옅은 띠는 방별 최소~최대'), h('span', { text: '흐린 구간은 수집률 50% 미만' }));
     const charts = [];
     // 항목마다 차트 하나. 같은 항목이라도 기기마다 단위가 다르면 단위별로 나눈다 (한 축에 섞지 않는다)
-    metrics.forEach((m, k) => m.units.forEach(u => {
+    // 데이터가 없는 항목은 자리만 남긴다. 측정기를 연결하면 같은 자리에 차트가 나온다
+    slots.forEach(m => {
+      if (!m.empty) return chartsOf(m, metrics.indexOf(m));
+      const sec = section(m.label, null);
+      sec.append(empty('측정기 없음', m.pending
+        ? '이 항목을 보내는 측정기를 연결하고 수집 항목에 더하면 여기에 차트가 나옵니다'
+        : '이 항목을 보내는 측정기를 연결하면 첫 집계(매시 2분) 뒤 여기에 차트가 나옵니다'));
+      charts.push(sec);
+    });
+    function chartsOf(m, k) { m.units.forEach(u => {
       const title = m.label + (u ? ` (${unitText(u)})` : '');
       const sec = section(title, m.note), host = chartHost();  // 부제: 값 품질 메모 (예: 추정값(추세용))
       const pick = mc => (m.scope ? mc.series : mc.series.filter(x => (x.unit || null) === (u || null)));
@@ -377,7 +388,7 @@
       }, true);
       sec.append(host, tv);
       charts.push(sec);
-    }));
+    }); }
     later(() => g.start());
     return [controls, cur, legend, g.bar, ...charts,
       period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];

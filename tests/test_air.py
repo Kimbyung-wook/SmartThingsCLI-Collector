@@ -181,6 +181,16 @@ class AirRollupApiTests(AirDbMixin, unittest.TestCase):
         self.assertIsNone(rooms["방B"]["values"]["fineDustLevel"]["grade"])
         self.assertEqual(d["grades"]["moderate"], "보통")
 
+    def test_air_reserves_slots_for_missing_metrics(self):
+        d = api.air(self.ctx(), {})
+        reserved = [(r["key"], r["pending"]) for r in d["reserved"]]
+        self.assertEqual(reserved, [("veryFineDustLevel", False), ("pm4", True), ("dustLevel", False),
+                                    ("formaldehydeLevel", False), ("carbonMonoxideLevel", False),
+                                    ("vocIndex", True), ("noxIndex", True)])
+        slots = sorted([*d["metrics"], *d["reserved"]], key=lambda m: m["order"])
+        self.assertEqual([m["label"] for m in slots],
+                         ["PM2.5", "CO2", "PM1.0", "PM4.0", "PM10", "TVOC", "HCHO", "CO", "VOC 지수", "NOx 지수"])
+
     def test_summary_adds_air_only_where_present(self):
         rooms = {r["name"]: r for r in api.summary(self.ctx(), {})["rooms"]}
         self.assertEqual(set(rooms), {"방A", "방B"})  # 공기질만 있는 방도 카드가 생긴다

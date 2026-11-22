@@ -41,6 +41,24 @@ AIR_METRICS: dict[str, tuple[str, str | None, str | None]] = {
     "airQuality": ("공기질 지수", None, None),
 }
 
+# 공기질 탭에 늘 자리를 두는 항목 (키, 표시 이름). 화면에 이 순서로 놓는다.
+# 데이터가 없으면 표에는 "—", 차트 자리에는 "측정기 없음"을 보여 준다.
+# 키가 AIR_METRICS 에 없는 항목은 SmartThings 쪽 capability 가 정해지지 않은 예비 자리다
+# (DIY 측정기 SEN68: PM4.0 은 표준 capability 없음, VOC·NOx 지수는 사용자 정의 capability 예정).
+# 정해지면 키를 실제 속성 이름으로 바꾸고 AIR_CAPABILITIES·AIR_METRICS 에 줄을 더한다.
+AIR_SLOTS: list[tuple[str, str]] = [
+    ("fineDustLevel", "PM2.5"),
+    ("carbonDioxide", "CO2"),
+    ("veryFineDustLevel", "PM1.0"),
+    ("pm4", "PM4.0"),
+    ("dustLevel", "PM10"),
+    ("tvocLevel", "TVOC"),
+    ("formaldehydeLevel", "HCHO"),
+    ("carbonMonoxideLevel", "CO"),
+    ("vocIndex", "VOC 지수"),
+    ("noxIndex", "NOx 지수"),
+]
+
 # 등급 속성 -> 그 등급이 가리키는 측정 항목. capability 이름과 속성 이름이 같다.
 AIR_GRADES: dict[str, str] = {
     "veryFineDustHealthConcern": "veryFineDustLevel",

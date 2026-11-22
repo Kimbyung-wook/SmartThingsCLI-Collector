@@ -17,7 +17,7 @@ import time
 from collections import defaultdict
 
 from .. import __version__
-from ..air import (AIR_GRADES, AIR_METRICS, CLIMATE_ATTRIBUTES, GRADE_TEXT, air_digits, capability_rank,
+from ..air import (AIR_GRADES, AIR_METRICS, AIR_SLOTS, CLIMATE_ATTRIBUTES, GRADE_TEXT, air_digits, capability_rank,
                    display_unit, is_air_device)
 from pathlib import Path
 
@@ -666,7 +666,16 @@ def air(ctx: Context, params: dict) -> dict:
             cur = _air_now(ctx, s)
             if cur is not None:
                 card["values"][attr] = cur
-    return {"metrics": metrics, "rooms": sorted(cards.values(), key=lambda c: c["name"]),
+    # 데이터가 없는 항목은 자리만 둔다 (표의 "—", 차트 자리의 "측정기 없음"). 공기질 기기가 하나도 없으면 두지 않는다
+    order = {key: i for i, (key, _) in enumerate(AIR_SLOTS)}
+    present = {m["key"] for m in metrics}
+    reserved = [{"key": key, "label": label, "pending": key not in AIR_METRICS, "order": order[key]}
+                for key, label in AIR_SLOTS if metrics and key not in present]
+    for m in metrics:
+        m["order"] = order.get(m["key"], len(AIR_SLOTS))
+    metrics.sort(key=lambda m: m["order"])
+    return {"metrics": metrics, **({"reserved": reserved} if metrics else {}),
+            "rooms": sorted(cards.values(), key=lambda c: c["name"]),
             "grades": GRADE_TEXT, "closed_until": ctx.closed_until}
 
 
