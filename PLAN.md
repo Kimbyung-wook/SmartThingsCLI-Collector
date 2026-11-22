@@ -472,7 +472,7 @@ flowchart TB
 ## 15. 예정 요구사항: 방별 공기질 (2026-11-20 요청)
 
 - 요청: 공기질 센서 여러 대를 SmartThings에 추가할 예정. 추가하면 방별 공기질을 다른 센서처럼 시계열(평균·최대·최소)로 본다
-- 상태: 센서 추가 전. 지금은 공기질 값을 수집하지 않는다(`[collect.attributes]`에 없음)
+- 상태: 구현 완료(PC 시험), RPi 배포와 실제 기기 확인 전
 - 착수 조건: 사용자가 센서를 추가했다고 알려 주면 시작한다
 - 진행 순서
   1. 실제 기기의 capability·attribute·단위를 CLI 읽기 명령으로 확인한다. 후보: `airQualitySensor.airQuality`, `dustSensor.dustLevel`·`fineDustLevel`, `veryFineDustSensor.veryFineDustLevel`, `carbonDioxideMeasurement.carbonDioxide`, `tvocMeasurement.tvocLevel`. 기기마다 다르므로 추정으로 정하지 않는다

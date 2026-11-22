@@ -87,7 +87,7 @@ flowchart LR
 | 이력 방식 (OAuth) | 기기마다 이력 조회 |
 | 상태 방식 (CLI) | `devices --status` 1회로 전 기기 조회, `history_interval_s`보다 자주 읽지 않음 |
 | 상태 방식 (OAuth) | 기기별로 `status_interval_s` 주기에 맞춰 조회 |
-| 저장 | `INSERT OR IGNORE`로 삽입, `readings` 기본 키가 같으면 버림 |
+| 저장 | `INSERT OR IGNORE`로 삽입, `readings` 기본 키가 같으면 버림. 그 전에 공기질 기기의 중복·설정값을 버림 (아래 [공기질 항목](#공기질-항목-airpy)) |
 
 #### 수집 한 주기
 
@@ -139,6 +139,33 @@ flowchart TD
 
 - 성공할 때마다 기록: `meta.last_ok_ms`, `auth_state = ok`
 
+### 공기질 항목 (`air.py`)
+
+- 항목 정의는 `stcollector/air.py`에만 둠. 기준 기기는 PV28-CW (Edge 드라이버, component `main`)
+- 다른 공기질 기기도 받도록 SmartThings 표준 capability를 범용으로 둠. 사용자 정의 capability는 `AIR_CAPABILITIES`와 `AIR_METRICS`에 줄을 더함
+- 코드 기본 수집 대상(`DEFAULT_ATTRIBUTES`)에 측정값과 등급을 포함. 상태 방식 조회 주기 기본 300초
+
+| capability | 속성 | 항목 | 비고 |
+|---|---|---|---|
+| `carbonDioxideMeasurement` | `carbonDioxide` | CO2 | |
+| `fineDustSensor` | `fineDustLevel` | PM2.5 | |
+| `dustSensor` | `dustLevel`, `fineDustLevel` | PM10, PM2.5 | PM10은 추정값 |
+| `veryFineDustSensor` | `veryFineDustLevel` | PM1.0 | |
+| `formaldehydeMeasurement` | `formaldehydeLevel` | HCHO | 추정값 |
+| `tvocMeasurement` | `tvocLevel` | TVOC | 추정값 |
+| `carbonMonoxideMeasurement` | `carbonMonoxideLevel` | CO | PV28-CW에는 없음 |
+| `airQualitySensor` | `airQuality` | 공기질 지수 | PV28-CW 드라이버는 보내지 않음 |
+| `*HealthConcern` 8종 | capability와 같은 이름 | 기기가 주는 등급(좋음~위험) | 집계하지 않고 최신값만 표시. PV28-CW는 보내지 않음 |
+
+- 추정값 근거: PV28-CW 센서 구성(반도체식 가스 센서, PM10은 PM2.5에서 환산)
+- 수집 때 버리는 값 (`keep_reading`, 수집 건수 줄이기)
+  - PM2.5 중복: `fineDustSensor`가 있는 기기의 `dustSensor.fineDustLevel`. PV28-CW는 같은 값을 둘 다 보냄
+  - 공기질 기기의 `main`이 아닌 component의 `switch`: 기기 설정(PV28-CW의 경보음)이라 플러그 탭에 섞이지 않게 버림. `main`의 `switch`(예: 공기청정기 전원)는 받음
+  - 공기질 기기 판정: 공기질 측정값 capability가 하나라도 있는 기기 (`is_air_device`)
+- 단위: 이벤트의 `unit`을 그대로 저장. 화면에서만 다듬음(`display_unit`: `μg/m^3`, `ug/m3` → `μg/m³`, `mg/m^3` → `mg/m³`). 값은 그대로
+- 표시 자릿수: TVOC·HCHO가 ppm·mg/m³면 소수 셋째 자리, CO는 첫째 자리, 그 밖은 정수
+
+
 ## 집계 (`rollup.py`)
 
 - 규칙의 이유: [PLAN §7](../PLAN.md#7-저장--집계)
@@ -174,6 +201,17 @@ flowchart LR
 - 범위: 남아 있는 원본 전체
 - 같은 구간을 다시 계산해도 결과 동일
 
+### 집계 대상
+
+- `ROLLUP_ATTRIBUTES`: 온도, 습도, 조도, 전력, 전력량, 스위치와 공기질 측정값 8개(`AIR_METRICS`). 공기질 등급(`*HealthConcern`)은 집계하지 않음
+- 같은 (기기, 속성)이 여러 component·capability로 오면 계열 하나만 고름 (`_primary_series`)
+  - 순서: `main` component, `air.capability_rank`(`fineDustSensor` 0, `dustSensor` 1, 그 밖 9), capability 이름
+  - PM2.5는 `fineDustSensor`를 먼저 고름. 수집 단계 이전에 저장된 `dustSensor` 기록이 있어도 섞이지 않음
+  - 웹 `api.py`도 같은 순서로 고름
+- 공기질 `max_hold_s`: 측정값 모두 7200초(2시간)
+  - 근거: PV28-CW 드라이버는 30초마다 읽어 바뀐 값만 보냄. CO2는 거의 매번 바뀌므로 2시간 넘게 이벤트가 없으면 끊긴 것으로 봄
+  - 깨끗한 공기에서 PM·HCHO·TVOC가 2시간 넘게 그대로라 빈 구간이 생기면 그 항목만 21600초(6시간)로 늘림
+
 ## 웹 (`web/`)
 
 - `server.py`
@@ -185,6 +223,8 @@ flowchart LR
   - 차트는 집계 테이블에서만 조회
   - `readings`는 최신값과 아직 집계되지 않은 오늘 구간의 최대·최소에만 사용
   - `/hub/status`: SmartThings 허브용 요약 (아래 [허브 상태 경로](#허브-상태-경로-hubstatus))
+  - `/api/air`: 공기질 탭의 틀. 데이터가 있는 항목(단위별)과 방별 현재값·등급. 차트는 `/api/series`로 받음
+  - `/api/series`: 공기질 항목도 받고 계열마다 단위와 자릿수를 실음. `scope=air`는 공기질 기기의 온습도만 줌(`temperature`, `humidity`에만 씀)
 - `session.py`
   - scrypt 비밀번호 검증과 서명된 세션 쿠키
   - 세션 키는 비밀번호 해시에서 유도해 재시작해도 유지
@@ -195,8 +235,21 @@ flowchart LR
 
 ### 화면
 
-- 탭: 요약, 추세, 조도 분포, 재실, 플러그, 상태
+- 탭: 요약, 추세, 공기질, 조도 분포, 재실, 플러그, 상태. 7개가 스마트폰 폭에 들어가게 맞춤
 - 요약 탭: 방별 현재값 띠(온도 크게, 습도·조도·재실), 최근 24시간 온도 큰 차트 1개, 습도·조도 작은 차트 2개, 방별 상태 표
+  - 공기질 데이터가 있는 방만 띠에 PM2.5·CO2 현재값을 더함. 기기가 등급을 주면 괄호 안에 표시
+- 공기질 탭
+  - 기간: 24시간(시간별), 1개월(일별), 1년(주별)
+  - 방별 현재값 표: 데이터가 있는 항목만. 기기가 등급을 주면 괄호 안에 표시
+  - 차트: 항목마다 하나, 같은 항목이라도 기기마다 단위가 다르면 단위별로 나눔. 방별 평균선과 최소~최대 띠, 표 보기
+  - 과거 보기: 차트를 옆으로 끌거나 이전·다음·최신 버튼
+  - PM10·TVOC·HCHO 차트 부제: "추정값(추세용)"
+  - 단위 표시: 서버가 다듬은 단위(μg/m³ 등). 다듬지 않은 단위가 와도 `^3`은 위 첨자로 표시
+  - 공기질 기기의 온습도: 이 탭에서 따로 봄(`/api/series?scope=air`)
+  - 데이터 없음: "공기질 센서 없음" 안내와 함께, 측정기를 연결하면 첫 집계(매시 2분) 뒤 방별 추세가 나온다고 표시
+- 공기질 기기의 온습도: 설정 `[dashboard] air_quality_temp_in_rooms`(기본 `false`)
+  - `false`: 방별 온습도(요약·추세·이슬점)에 섞지 않고 공기질 탭에서만 봄. PV28-CW 온도는 정수 °C에 사용자 보정값이 들어가기 때문
+  - `true`: 방별 온습도에도 섞음. 공기질 탭에는 설정과 관계없이 표시
 - 조도 화면의 색: 전구색 계열
 - 상태 탭
   - 기간: 1시간(1분별), 24시간(5분별, 14일보다 전은 1시간 평균)
@@ -210,7 +263,7 @@ flowchart LR
 | API | 캐시 기준 |
 |---|---|
 | `/api/series`, `/api/lux-dist`, `/api/occupancy`, `/api/plugs` | 집계 완료 시각과 현재 시 |
-| `/api/summary`, `/api/status`, `/api/meta`, `/api/system` | 15초 |
+| `/api/summary`, `/api/status`, `/api/meta`, `/api/system`, `/api/air` | 15초 |
 
 ### 화면 상단 경고
 

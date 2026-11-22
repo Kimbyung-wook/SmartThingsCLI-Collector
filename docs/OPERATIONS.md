@@ -115,6 +115,23 @@ sudo du -sh /var/lib/stcollector /var/lib/stcollector/cli/.local/state
 - 공유받은 위치가 계정에 생기는 것처럼 저장소 밖의 변화로도 위치 수가 바뀜
 - 규칙 전체: [ARCHITECTURE: 위치 선택](ARCHITECTURE.md#위치-선택-collectorresolve_location-020r3)
 
+### 공기질 측정기
+
+- 기준 기기: PV28-CW (SmartThings Edge 드라이버, 허브가 LAN으로 폴링)
+  - 측정 항목: CO2, PM1.0, PM2.5, PM10, HCHO, TVOC. CO와 공기질 지수는 없음
+  - HCHO, TVOC, PM10은 추정값. 대시보드 차트 부제에 "추정값(추세용)"으로 표시
+  - 같은 PM2.5를 두 capability로 보내지만 수집할 때 하나만 남김
+  - 경보음 설정용 스위치는 수집하지 않아 플러그 탭에 섞이지 않음
+  - 온습도는 기본으로 공기질 탭에서만 보임
+- 실제 이력에 이벤트가 남는지: RPi 미확인 (배포 뒤 확인)
+- 기존 설치에서 공기질을 받으려면 `/etc/stcollector/config.toml`을 고침 (방법은 [설정 바꾸기](#설정-바꾸기))
+  - `[collect.attributes]`: 설정에 이 절이 있으면 코드 기본값 대신 이 절만 씀. `config.example.toml`의 공기질 줄(측정값과 등급)을 더함
+  - `[collect.status_interval_s]`, `[rollup.max_hold_s]`: 코드 기본값과 합쳐 읽으므로 공기질 줄이 없어도 300초, 7200초(2시간)가 적용됨. 값을 바꿀 때만 줄을 더함
+  - 깨끗한 공기에서 PM·HCHO·TVOC 차트에 빈 구간이 생기면: `[rollup.max_hold_s]`에서 그 항목만 21600(6시간)으로 늘리고 `stcollector rollup --full`
+  - `[dashboard] air_quality_temp_in_rooms`: 공기질 기기의 온습도를 방별 온습도에 섞으려면 `true`. 기본 `false`라 이 절이 없어도 됨
+  - 고친 뒤 수집·웹 서비스 재시작
+- 항목 정의와 규칙: [ARCHITECTURE: 공기질 항목](ARCHITECTURE.md#공기질-항목-airpy)
+
 ### 설정 바꾸기
 
 ```bash
@@ -231,6 +248,7 @@ sudo systemctl restart stcollector stcollector-web stcollector-sysmon
 | 스마트폰 로그인 | 같은 공유기에 연결된 스마트폰에서 `http://<RPi IP>:8080` 접속 |
 | `smartthings logout` 동작 | 재로그인 때 확인 |
 | SmartThings 앱의 수집 이상 열림 알림 | 수집 이상이 생겼을 때 앱 알림 확인 |
+| 공기질 측정기(PV28-CW)의 이벤트가 실제 이력에 남는지, 공기질 탭 표시 | 공기질 기능 배포 뒤 대시보드 공기질 탭과 수집 로그 |
 | CLI 자체 로그의 크기와 microSD 쓰기량 | 위 [디스크](#디스크) 명령 |
 | 실제 데이터로 본 대시보드와 첫 집계, RPi 응답 속도 | M2~M4 완료 기준 ([PLAN §11](../PLAN.md#11-단계별-진행)) |
 | DB 전체 건수 | 서비스 계정 권한이 필요해 2026-11-22 점검에서 읽지 못함. `sudo -u stcollector sqlite3`로 조회 |
