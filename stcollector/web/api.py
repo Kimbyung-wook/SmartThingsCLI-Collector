@@ -17,6 +17,7 @@ import time
 from collections import defaultdict
 
 from .. import __version__
+from ..air import AIR_GRADES, AIR_METRICS, GRADE_TEXT, air_digits
 from pathlib import Path
 
 from ..rollup import (
@@ -28,7 +29,7 @@ ROLLUP_TABLES = {"hour": "rollup_hour", "day": "rollup_day", "week": "rollup_wee
 TREND_PERIODS = {"24h": ("hour", 24), "month": ("day", 30), "year": ("week", 52)}  # (단위, 한 화면 구간 수)
 # 한 번에 보내는 묶음 크기 (구간 수). 화면은 이 중 한 화면만큼 보여 주고, 끌면 이전 묶음을 더 받는다.
 TREND_CHUNKS = {"24h": 72, "month": 90, "year": 156}  # 3일, 90일, 3년
-TREND_METRICS = {"temperature", "humidity", "illuminance", "dewpoint"}
+TREND_METRICS = {"temperature", "humidity", "illuminance", "dewpoint", *AIR_METRICS}
 DIST_PERIODS = {"week": 7, "month": 30, "year": 365}
 OCC_PERIODS = {"month": 30, "year": 365}
 PLUG_PERIODS = {"month", "year"}
@@ -143,7 +144,7 @@ class Context:
         return self._index
 
     def rooms(self) -> list[str]:
-        names = {s.place for attr in SENSOR_ATTRIBUTES for s in self.index.get(attr, [])}
+        names = {s.place for attr in (*SENSOR_ATTRIBUTES, *AIR_METRICS) for s in self.index.get(attr, [])}
         return sorted(names)
 
     def color(self, place: str, rooms: list[str] | None = None):
@@ -260,19 +261,31 @@ def series(ctx: Context, params: dict) -> dict:
         unit = "°C"
     else:
         items = ctx.index.get(metric, [])
+        air = AIR_METRICS.get(metric)
         for s in items:
             pairs.append((s.device_id, metric))
             rows = _rows_by_bucket(ctx, table, s.device_id, metric, start, last)
+            # 공기질은 기기가 보낸 단위를 그대로 쓴다. 기기마다 단위가 다를 수 있어 계열마다 싣는다
+            s_unit = (s.unit or air[1]) if air else None
+            d = air_digits(metric, s_unit) if air else digits
             avg, lo, hi, cov = [], [], [], []
             for b in buckets:
                 row = rows.get(b)
-                avg.append(_r(row[1], digits) if row else None)
-                lo.append(_r(row[2], digits) if row else None)
-                hi.append(_r(row[3], digits) if row else None)
+                avg.append(_r(row[1], d) if row else None)
+                lo.append(_r(row[2], d) if row else None)
+                hi.append(_r(row[3], d) if row else None)
                 cov.append(_r(row[4], 2) if row else None)
-            out.append({"id": s.device_id, "name": s.place, "color": ctx.color(s.place, rooms),
-                        "avg": avg, "min": lo, "max": hi, "coverage": cov})
-        unit = {"temperature": "°C", "humidity": "%", "illuminance": "lx"}[metric]
+            entry = {"id": s.device_id, "name": s.place, "color": ctx.color(s.place, rooms),
+                     "avg": avg, "min": lo, "max": hi, "coverage": cov}
+            if air:
+                entry["unit"], entry["digits"] = s_unit, d
+            out.append(entry)
+        if air:
+            units = {x["unit"] for x in out}
+            unit = units.pop() if len(units) == 1 else (None if units else air[1])  # 여럿이면 계열별 unit 을 본다
+            digits = max((x["digits"] for x in out), default=air_digits(metric, air[1]))
+        else:
+            unit = {"temperature": "°C", "humidity": "%", "illuminance": "lx"}[metric]
     oldest = _oldest(ctx, table, pairs)
     return {"metric": metric, "period": period, "grain": grain, "unit": unit, "digits": digits,
             "view": TREND_PERIODS[period][1], "buckets": buckets, "closed_until": ctx.closed_until,
@@ -579,6 +592,11 @@ def summary(ctx: Context, params: dict) -> dict:
             cards[s.place]["occupancy"] = {
                 "occupied": latest[2] in ("active", "present"), "ts": latest[0],
             }
+    for attr in SUMMARY_AIR:  # 공기질은 데이터가 있을 때만 카드에 더한다
+        for s in ctx.index.get(attr, []):
+            cur = _air_now(ctx, s)
+            if cur is not None:
+                cards[s.place].setdefault("air", {})[attr] = cur
     out = []
     for card in cards.values():
         t, h = card.get("temperature"), card.get("humidity")
@@ -586,6 +604,52 @@ def summary(ctx: Context, params: dict) -> dict:
             card["dew_point"] = _r(dew_point(t["now"], h["now"]), 1)
         out.append(card)
     return {"rooms": out, "closed_until": ctx.closed_until, "has_data": bool(out)}
+
+
+# ---- /api/air: 공기질 현재값과 있는 항목 ----------------------------------------------
+SUMMARY_AIR = ("fineDustLevel", "carbonDioxide")
+
+
+def _air_grade(ctx: Context, s: Series) -> str | None:
+    """같은 기기가 주는 등급의 최신값 (없으면 None)."""
+    for grade_attr, metric in AIR_GRADES.items():
+        if metric != s.attribute:
+            continue
+        for g in ctx.index.get(grade_attr, []):
+            if g.device_id == s.device_id:
+                row = ctx.latest(g)
+                if row is not None and row[2] in GRADE_TEXT:
+                    return row[2]
+    return None
+
+
+def _air_now(ctx: Context, s: Series) -> dict | None:
+    latest = ctx.latest(s)
+    if latest is None or latest[1] is None or not math.isfinite(latest[1]):
+        return None
+    unit = s.unit or AIR_METRICS[s.attribute][1]
+    digits = air_digits(s.attribute, unit)
+    return {"now": _r(latest[1], digits), "unit": unit, "digits": digits, "ts": latest[0],
+            "grade": _air_grade(ctx, s)}
+
+
+def air(ctx: Context, params: dict) -> dict:
+    """공기질 탭의 틀: 데이터가 있는 항목(단위별)과 방별 현재값. 차트는 /api/series 로 받는다."""
+    rooms = ctx.rooms()
+    metrics, cards = [], {}
+    for attr, (label, default_unit) in AIR_METRICS.items():
+        items = ctx.index.get(attr, [])
+        if not items:
+            continue  # 데이터가 없는 항목은 숨긴다
+        units = sorted({s.unit or default_unit for s in items}, key=lambda u: u or "")
+        metrics.append({"key": attr, "label": label, "units": units})
+        for s in items:
+            card = cards.setdefault(s.place, {"name": s.place, "color": ctx.color(s.place, rooms), "values": {}})
+            cur = _air_now(ctx, s)
+            if cur is not None:
+                card["values"][attr] = cur
+    return {"metrics": metrics, "rooms": sorted(cards.values(), key=lambda c: c["name"]),
+            "grades": GRADE_TEXT, "closed_until": ctx.closed_until}
 
 
 # ---- /api/status, 경고 -----------------------------------------------------------
@@ -1095,4 +1159,4 @@ def hub_status(ctx: Context) -> dict:
 # 집계가 바뀌어야 결과가 바뀌는 API (rollup 완료 시각으로 캐시)
 ROLLUP_ROUTES = {"/api/series": series, "/api/lux-dist": lux_dist, "/api/occupancy": occupancy, "/api/plugs": plugs}
 # 현재값을 포함하는 API (짧게만 캐시)
-LIVE_ROUTES = {"/api/summary": summary, "/api/status": status, "/api/meta": meta, "/api/system": system}
+LIVE_ROUTES = {"/api/summary": summary, "/api/status": status, "/api/meta": meta, "/api/system": system, "/api/air": air}

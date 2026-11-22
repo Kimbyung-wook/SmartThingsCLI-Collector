@@ -65,8 +65,8 @@
 
   // ---- 공용 조각 ------------------------------------------------------------------
   const S = { tab: 'summary', metric: 'temperature', period: '24h', room: 'all', luxRoom: null, luxScope: 'all', luxPeriod: 'month',
-    occRoom: null, occPeriod: 'month', plugPeriod: 'month', sysPeriod: '24h' };
-  const TABS = [['summary', '요약'], ['trend', '추세'], ['lux', '조도 분포'], ['occ', '재실'], ['plug', '플러그'], ['status', '상태']];
+    occRoom: null, occPeriod: 'month', plugPeriod: 'month', sysPeriod: '24h', airPeriod: '24h' };
+  const TABS = [['summary', '요약'], ['trend', '추세'], ['air', '공기질'], ['lux', '조도 분포'], ['occ', '재실'], ['plug', '플러그'], ['status', '상태']];
   const METRICS = [['temperature', '온도'], ['humidity', '습도'], ['illuminance', '조도'], ['dewpoint', '이슬점']];
   const PERIODS = [['24h', '24시간 · 시간별'], ['month', '1개월 · 일별'], ['year', '1년 · 주별']];
   let meta = null;
@@ -169,7 +169,7 @@
     const last = list[list.length - 1], ids = [], info = {};
     list.slice().reverse().forEach(d => d.series.forEach(x => { if (!info[x.id]) { info[x.id] = x; ids.push(x.id); } }));
     const series = ids.map(id => {
-      const base = info[id], out = { id, name: base.name, color: base.color };
+      const base = info[id], out = { id, name: base.name, color: base.color, unit: base.unit, digits: base.digits };
       ['avg', 'min', 'max', 'coverage'].forEach(key => {
         if (!list.some(d => d.series.some(x => x.id === id && x[key]))) { out[key] = null; return; }
         out[key] = [];
@@ -183,6 +183,13 @@
     const buckets = [].concat(...list.map(d => d.buckets));
     return { ...last, buckets, xend: last.buckets[last.buckets.length - 1] + STEP[last.grain], series };
   }
+  /* 함께 움직이는 여러 차트의 묶음 하나 = 항목별 /api/series 응답 배열 */
+  const multiChunk = list => ({ ...seriesChunk(list[0]), data: list, hasOlder: list.some(x => x.has_older),
+    oldest: list.reduce((m, x) => (x.oldest_ms == null ? m : m == null ? x.oldest_ms : Math.min(m, x.oldest_ms)), null) });
+  /* 공기질 단위는 기기가 보낸 값을 그대로 쓰고, ^3 만 위 첨자로 보여 준다 */
+  const unitText = u => (u ? String(u).replace(/\^3/g, '³').replace(/\^2/g, '²') : '');
+  const airValue = (v, grades) => (v ? fmt(v.now, v.digits) + (v.unit ? ' ' + unitText(v.unit) : '') : '—')
+    + (v && v.grade && grades && grades[v.grade] ? ` (${grades[v.grade]})` : '');
 
   // ---- 요약 -----------------------------------------------------------------------
   async function vSummary() {
@@ -206,11 +213,13 @@
         h('div', { class: 'room-temp' }, now(r.temperature, 1), h('small', { text: '°C' })),
         h('div', { class: 'room-sub' },
           h('span', { text: '습도 ' + now(r.humidity, 0) + '%' }),
-          h('span', { class: 'room-lux', text: now(r.illuminance, 0) + ' lx' })));
+          h('span', { class: 'room-lux', text: now(r.illuminance, 0) + ' lx' })),
+        // 공기질은 데이터가 있는 방만. 기기가 등급을 주면 괄호 안에 그대로
+        r.air ? h('div', { class: 'room-sub' }, [['fineDustLevel', 'PM2.5'], ['carbonDioxide', 'CO2']]
+          .filter(([k]) => r.air[k]).map(([k, label]) => h('span', { text: label + ' ' + airValue(r.air[k], AIR_GRADE_TEXT) }))) : null);
     };
     // 요약 차트는 함께 움직인다. 묶음 하나 = 보이는 항목별 /api/series 응답 배열
-    const summaryChunk = list => ({ ...seriesChunk(list[0]), data: list, hasOlder: list.some(x => x.has_older),
-      oldest: list.reduce((m, x) => (x.oldest_ms == null ? m : m == null ? x.oldest_ms : Math.min(m, x.oldest_ms)), null) });
+    const summaryChunk = multiChunk;
     const g = summaryMetrics.length ? Charts.pan({
       view: PAN_VIEW['24h'], first: summaryChunk(charts), range: rangeText(true),
       load: end => Promise.all(summaryMetrics.map(([metric]) => api('/api/series', withEnd({ metric, period: '24h' }, end)))).then(summaryChunk),
@@ -218,7 +227,7 @@
     }) : null;
     if (g) later(() => g.start());
 
-    const measured = d.rooms.filter(r => r.temperature || r.humidity || r.illuminance || r.occupancy != null);
+    const measured = d.rooms.filter(r => r.temperature || r.humidity || r.illuminance || r.occupancy != null || r.air);
     const strip = measured.length ? h('div', { class: 'rooms' }, measured.map(roomCard)) : null;
 
     // 첫 차트를 크게, 이어지는 차트는 작게 그린다.
@@ -316,6 +325,61 @@
     }, true);
     return [controls, legend, g.bar, host, tv,
       S.period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
+  }
+
+  // ---- 공기질 ---------------------------------------------------------------------
+  // 등급 문구. /api/air 와 같은 표를 요약 카드에서도 쓴다
+  const AIR_GRADE_TEXT = { good: '좋음', moderate: '보통', slightlyUnhealthy: '약간 나쁨', unhealthy: '나쁨', veryUnhealthy: '매우 나쁨', hazardous: '위험' };
+  async function vAir() {
+    const period = S.airPeriod;
+    const d = await api('/api/air');
+    if (!d.metrics.length) {
+      return [empty('공기질 센서 없음', 'SmartThings에 공기질 측정기를 연결하면 첫 집계(매시 2분) 뒤 여기에 방별 추세가 나옵니다')];
+    }
+    const metrics = d.metrics;  // 데이터가 있는 항목만 온다
+    const first = await Promise.all(metrics.map(m => api('/api/series', { metric: m.key, period })));
+    const controls = h('div', { class: 'controls' }, seg('airPeriod', PERIODS, '기간'));
+
+    const swatchName = r => { const k = h('i', { class: 'sw' }); k.style.background = color(r.color); return h('span', { class: 'room-name' }, k, h('span', { text: r.name })); };
+    const cur = section('방별 현재값', '기기가 등급을 주면 괄호 안에 그대로 표시');
+    cur.append(table(['방', ...metrics.map(m => m.label)],
+      d.rooms.map(r => [swatchName(r), ...metrics.map(m => airValue(r.values[m.key], d.grades))]), i => i > 0));
+
+    const g = Charts.pan({
+      view: PAN_VIEW[period], first: multiChunk(first), range: rangeText(period === '24h'),
+      load: end => Promise.all(metrics.map(m => api('/api/series', withEnd({ metric: m.key, period }, end)))).then(multiChunk),
+      merge: list => metrics.map((_, k) => mergeSeries(list.map(x => x[k]))),
+    });
+    const legend = h('div', { class: 'legend' }, d.rooms.map(r => legendLine(color(r.color), r.name)),
+      h('span', null, h('i', { class: 'band-key' }), '옅은 띠는 방별 최소~최대'), h('span', { text: '흐린 구간은 수집률 50% 미만' }));
+    const charts = [];
+    // 항목마다 차트 하나. 같은 항목이라도 기기마다 단위가 다르면 단위별로 나눈다 (한 축에 섞지 않는다)
+    metrics.forEach((m, k) => m.units.forEach(u => {
+      const title = m.label + (u ? ` (${unitText(u)})` : '');
+      const sec = section(title), host = chartHost();
+      const pick = mc => mc.series.filter(x => (x.unit || null) === (u || null));
+      const digitsOf = rs => rs.reduce((a, x) => Math.max(a, x.digits || 0), 0);
+      later(() => g.add(host, mm => {
+        const mc = mm[k], rs = pick(mc);
+        return {
+          xs: mc.buckets, xend: mc.xend, tip: i => bucketTip(mc.buckets[i], mc.grain), series: rs, band: true,
+          unit: unitText(u), digits: digitsOf(rs), height: W => (W < 520 ? 190 : 240),
+          ...(mc.grain === 'hour' ? { x: i => hourTick(mc.buckets[i]), ...TIME_TICKS } : { x: i => bucketX(mc.buckets[i], mc.grain) }),
+          aria: `방별 ${title} 차트. 선은 평균, 띠는 최소~최대. 옆으로 끌면 이전 기간. 값은 아래 표로도 볼 수 있습니다.`,
+        };
+      }, 'air-' + m.key + '-' + (u || '')));
+      const tv = tableView(() => {  // 지금 보이는 구간만
+        const mc = g.merged[k], rs = pick(mc), dg = digitsOf(rs);
+        const cell = (r, i) => fmt(r.avg[i], dg) + (r.min && r.min[i] != null ? ` (${fmt(r.min[i], dg)}~${fmt(r.max[i], dg)})` : '');
+        return table(['구간', ...rs.map(r => r.name + ' 평균 (최소~최대)')],
+          visibleIndex(mc.buckets, mc.xend, g).map(i => [bucketTip(mc.buckets[i], mc.grain), ...rs.map(r => cell(r, i))]), i => i > 0);
+      }, true);
+      sec.append(host, tv);
+      charts.push(sec);
+    }));
+    later(() => g.start());
+    return [controls, cur, legend, g.bar, ...charts,
+      period === '24h' && d.closed_until ? h('p', { class: 'sub', text: `${stamp(d.closed_until)}까지 집계 · 매시 2분 갱신` }) : null];
   }
 
   // ---- 조도 분포 -------------------------------------------------------------------
@@ -659,7 +723,7 @@
   }
 
   // ---- 틀 -------------------------------------------------------------------------
-  const VIEWS = { summary: vSummary, trend: vTrend, lux: vLux, occ: vOcc, plug: vPlug, status: vStatus };
+  const VIEWS = { summary: vSummary, trend: vTrend, air: vAir, lux: vLux, occ: vOcc, plug: vPlug, status: vStatus };
   let token = 0;
   async function render() {
     const me = ++token;

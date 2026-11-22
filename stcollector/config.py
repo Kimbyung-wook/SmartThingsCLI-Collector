@@ -8,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .air import AIR_ATTRIBUTES
+
 # 수집할 (capability -> attributes). 설정 파일에서 덮어쓸 수 있다.
 DEFAULT_ATTRIBUTES: dict[str, list[str]] = {
     "temperatureMeasurement": ["temperature"],
@@ -19,6 +21,7 @@ DEFAULT_ATTRIBUTES: dict[str, list[str]] = {
     "powerMeter": ["power"],
     "energyMeter": ["energy"],
     "battery": ["battery"],
+    **AIR_ATTRIBUTES,  # 공기질 측정값과 등급 (air.py)
 }
 
 # 상태 조회(status) 방식일 때 capability별 조회 주기(초).
@@ -33,6 +36,7 @@ DEFAULT_STATUS_INTERVALS: dict[str, int] = {
     "powerMeter": 60,
     "energyMeter": 900,
     "battery": 21600,
+    **{cap: 300 for cap in AIR_ATTRIBUTES},
 }
 
 MODES = ("auto", "history", "status")

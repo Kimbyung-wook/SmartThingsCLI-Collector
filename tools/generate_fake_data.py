@@ -3,7 +3,8 @@
 
     python tools/generate_fake_data.py --db <경로> [--days 400] [--seed 7]
 
-온습도 4, 조도 4, 재실 2, 플러그 10기(그중 6기는 전력 측정)를 흉내 낸다.
+온습도 4, 조도 4, 재실 2, 플러그 10기(그중 6기는 전력 측정), 공기질 측정기 2기를 흉내 낸다.
+공기질 2기는 PM2.5 를 서로 다른 capability 로, TVOC 를 서로 다른 단위로 보낸다 (묶기·단위 확인용).
 센서처럼 값이 일정 이상 변하거나 일정 시간이 지났을 때만 보고한다.
 수집 중단 구간도 넣어서 coverage 표시를 확인할 수 있다.
 DB 옆 sysmon/ 폴더에 시스템 모니터의 가짜 기록(sysmon.db, current.json)도 만든다.
@@ -48,6 +49,14 @@ PLUGS = [  # (이름, 방, 전력 W(0=측정 안 됨), 켜지는 시각, 꺼지�
     ("제습기", "small", 0, 12, 18, 0.2),
     ("충전 스테이션", "study", 0, 21, 8, 0.7),
 ]
+# 공기질 측정기: (방, PM2.5 를 보내는 capability, TVOC 단위, 공기질 지수·CO2 등급을 주는지)
+AIR = [("living", "dustSensor", "ppb", True), ("bed", "fineDustSensor", "ppm", False)]
+
+
+def outages(now_ms: int) -> list[tuple[int, int]]:
+    # 24시간 보기에서 짧은 공백(4시간, 점선으로 이어짐)과 긴 공백(10시간, 끊김)이 함께 보이게 한다
+    return [(now_ms - 120 * DAY, now_ms - 117 * DAY), (now_ms - 5 * DAY - 6 * HOUR, now_ms - 5 * DAY),
+            (now_ms - 24 * HOUR, now_ms - 20 * HOUR), (now_ms - 16 * HOUR, now_ms - 6 * HOUR)]
 
 
 def device_id(kind: str, i: int) -> str:
@@ -113,6 +122,14 @@ def devices():
         caps = {"switch"} | ({"powerMeter", "energyMeter"} if watt else set())
         out.append({"device_id": device_id("plug", i), "label": label, "name": "스마트플러그",
                     "room_id": room, "room_name": name, "location_id": "fake", "capabilities": caps})
+    for i, (room, pm_cap, _tvoc_unit, extra) in enumerate(AIR):
+        name = next(r["name"] for r in ROOMS if r["id"] == room)
+        caps = {pm_cap, "dustSensor", "veryFineDustSensor", "carbonDioxideMeasurement", "tvocMeasurement",
+                "formaldehydeMeasurement", "fineDustHealthConcern"}
+        if extra:
+            caps |= {"airQualitySensor", "carbonDioxideHealthConcern"}
+        out.append({"device_id": device_id("airq", i), "label": f"{name} 공기질", "name": "공기질 측정기",
+                    "room_id": room, "room_name": name, "location_id": "fake", "capabilities": caps})
     return out
 
 
@@ -124,10 +141,8 @@ def generate(db: Database, days: int, seed: int, now_ms: int) -> int:
     rng = random.Random(seed)
     step = 5 * MIN
     start = (now_ms - days * DAY) // (6 * HOUR) * (6 * HOUR)  # 보고 주기 계산이 맞도록 정렬
-    # 24시간 보기에서 짧은 공백(4시간, 점선으로 이어짐)과 긴 공백(10시간, 끊김)이 함께 보이게 한다
-    outages = [(now_ms - 120 * DAY, now_ms - 117 * DAY), (now_ms - 5 * DAY - 6 * HOUR, now_ms - 5 * DAY),
-               (now_ms - 24 * HOUR, now_ms - 20 * HOUR), (now_ms - 16 * HOUR, now_ms - 6 * HOUR)]
-    in_outage = lambda t: any(a <= t < b for a, b in outages)  # noqa: E731
+    gaps = outages(now_ms)
+    in_outage = lambda t: any(a <= t < b for a, b in gaps)  # noqa: E731
 
     db.upsert_devices(devices())
     climate = [(Reporter(0.2, 45 * MIN), Reporter(1.5, 45 * MIN)) for _ in ROOMS]
@@ -295,6 +310,74 @@ def generate_sysmon(db_path: Path, seed: int, now_ms: int, days: int = 14, minut
     return total
 
 
+def _pm_grade(pm25: float) -> str:
+    return "good" if pm25 <= 15 else "moderate" if pm25 <= 35 else "unhealthy" if pm25 <= 75 else "veryUnhealthy"
+
+
+def _co2_grade(co2: float) -> str:
+    return "good" if co2 <= 1000 else "moderate" if co2 <= 2000 else "unhealthy"
+
+
+def generate_air(db: Database, days: int, seed: int, now_ms: int) -> int:
+    """공기질 측정기 2기. 기존 측정값과 난수를 나누지 않아 다른 기기의 가짜 값은 그대로다."""
+    rng = random.Random(seed + 2)
+    step = 5 * MIN
+    start = (now_ms - days * DAY) // (6 * HOUR) * (6 * HOUR)
+    gaps = outages(now_ms)
+    rows, total = [], 0
+    for i, (room, pm_cap, tvoc_unit, extra) in enumerate(AIR):
+        dev = device_id("airq", i)
+        rep = {k: Reporter(th, 30 * MIN, relative=rel) for k, th, rel in (
+            ("pm25", 2, False), ("pm10", 3, False), ("pm1", 2, False), ("co2", 30, False),
+            ("tvoc", 0.15, True), ("hcho", 0.004, False), ("aqi", 3, False))}
+        grade, co2_grade, grade_ts = None, None, 0
+        outdoor_pm, co2, spike = 10.0, 450.0, 0.0
+        t = start
+        while t < now_ms:
+            hod = hour_of_day(t)
+            outdoor_pm = max(2.0, min(60.0, outdoor_pm + rng.gauss(0, 0.35)))
+            if room == "living" and 18 <= hod < 20 and rng.random() < 0.03:
+                spike = rng.uniform(15, 45)  # 요리
+            spike *= 0.9
+            pm25 = max(1.0, 0.45 * outdoor_pm + spike + rng.gauss(0, 0.8))
+            asleep = hod >= 23 or hod < 7
+            target = (1250 if asleep else 520) if room == "bed" else (950 if 18.5 <= hod < 23 else 480)
+            co2 = max(400.0, co2 + (target - co2) * 0.12 + rng.gauss(0, 8))
+            tvoc_ppb = max(20.0, 110 + 2.5 * spike + (60 if room == "bed" and asleep else 0) + rng.gauss(0, 12))
+            hcho = max(0.0, 0.018 + 0.006 * math.sin(2 * math.pi * (hod - 15) / 24) + rng.gauss(0, 0.002))
+            values = {
+                "pm25": (pm_cap, "fineDustLevel", round(pm25), "μg/m^3"),
+                "pm10": ("dustSensor", "dustLevel", round(pm25 * 1.45 + rng.uniform(0, 3)), "μg/m^3"),
+                "pm1": ("veryFineDustSensor", "veryFineDustLevel", round(pm25 * 0.68), "μg/m^3"),
+                "co2": ("carbonDioxideMeasurement", "carbonDioxide", round(co2), "ppm"),
+                "tvoc": ("tvocMeasurement", "tvocLevel",
+                         round(tvoc_ppb) if tvoc_unit == "ppb" else round(tvoc_ppb / 1000, 3), tvoc_unit),
+                "hcho": ("formaldehydeMeasurement", "formaldehydeLevel", round(hcho, 3), "mg/m^3"),
+            }
+            if extra:
+                values["aqi"] = ("airQualitySensor", "airQuality", min(100, round(pm25 * 2.2 + (co2 - 400) / 40)), "CAQI")
+            if not any(a <= t < b for a, b in gaps):
+                jitter = rng.randint(0, 120_000)
+                for n, (key, (cap, attr, value, unit)) in enumerate(values.items()):
+                    if rep[key].should_report(t, value):
+                        rows.append(row(dev, cap, attr, t + jitter + n, value, unit=unit))
+                        rep[key].mark(t, value)
+                g = _pm_grade(pm25)
+                if g != grade or t - grade_ts >= 6 * HOUR:
+                    rows.append(row(dev, "fineDustHealthConcern", "fineDustHealthConcern", t + jitter + 20, text=g))
+                    grade, grade_ts = g, t
+                if extra and _co2_grade(co2) != co2_grade:
+                    co2_grade = _co2_grade(co2)
+                    rows.append(row(dev, "carbonDioxideHealthConcern", "carbonDioxideHealthConcern", t + jitter + 21,
+                                    text=co2_grade))
+            if len(rows) >= 20_000:
+                total += db.insert_readings(rows)
+                rows = []
+            t += step
+    total += db.insert_readings(rows)
+    return total
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--db", required=True)
@@ -309,6 +392,7 @@ def main() -> int:
     begin = time.time()
     now_ms = int(time.time() * 1000)
     n = generate(db, args.days, args.seed, now_ms)
+    n += generate_air(db, args.days, args.seed, now_ms)
     db.close()
     generate_sysmon(path, args.seed, now_ms, days=args.days)
     print(f"측정값 {n:,}건 생성, {time.time() - begin:.1f}초, 파일 {path.stat().st_size / 1e6:.1f} MB")

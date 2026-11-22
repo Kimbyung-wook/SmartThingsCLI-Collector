@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .air import AIR_METRICS
 from .config import ConfigError
 
 DAY_S = 86_400
@@ -24,6 +25,7 @@ DEFAULT_MAX_HOLD_S: dict[str, int] = {
     "motion": 7 * DAY_S,
     "presence": 7 * DAY_S,
     "switch": 365 * DAY_S,
+    **{attr: 7_200 for attr in AIR_METRICS},  # 공기질 측정값
 }
 FALLBACK_MAX_HOLD_S = 7_200
 

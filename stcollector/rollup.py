@@ -18,6 +18,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .air import AIR_METRICS
 from .settings import RollupSettings
 
 log = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ STATE_MAPS: dict[str, dict[str, float]] = {
     "motion": {"active": 1.0, "inactive": 0.0},
     "presence": {"present": 1.0, "not present": 0.0},
 }
-ROLLUP_ATTRIBUTES = ("temperature", "humidity", "illuminance", "power", "energy", "switch")
+ROLLUP_ATTRIBUTES = ("temperature", "humidity", "illuminance", "power", "energy", "switch", *AIR_METRICS)
 OCCUPANCY_ATTRIBUTES = ("presence", "motion")
 
 _RETENTION_INTERVAL_MS = DAY_MS
