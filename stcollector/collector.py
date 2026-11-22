@@ -246,6 +246,9 @@ class Collector:
             for device_id in known:
                 if self.db.get_cursor(device_id) is None:
                     self.db.set_cursor(device_id, since)
+        # 커서가 없는 기기는 아래에서 기기별로 백필한다. 위치 이력에 그 기기 이벤트가 있어도 여기서
+        # 커서를 만들면 백필이 건너뛰어지므로 커서는 백필이 만든다 (값은 그대로 저장, 중복은 기본 키로 걸러짐).
+        needs_backfill = {d for d in known if self.db.get_cursor(d) is None}
         newest = max(cursor or 0, since if first else 0)
         total = 0
         pages = 0
@@ -264,7 +267,8 @@ class Collector:
                 device_id = item.get("deviceId")
                 if device_id not in known:
                     continue
-                newest_by_device[device_id] = max(newest_by_device.get(device_id, 0), epoch)
+                if device_id not in needs_backfill:
+                    newest_by_device[device_id] = max(newest_by_device.get(device_id, 0), epoch)
                 row = history_item_to_row(item, self.cfg.attributes)
                 if row and self._keep(row):
                     rows.append(row)

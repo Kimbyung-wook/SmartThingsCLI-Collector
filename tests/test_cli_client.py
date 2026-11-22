@@ -598,6 +598,26 @@ class CollectorCliTest(CliTestBase):
         c.poll_history()
         self.assertEqual(len(self.fake.named("devices:history")), 1)
 
+    def test_new_device_seen_in_location_history_still_backfills(self):
+        # 새 기기 이벤트가 위치 이력에 먼저 보여도 커서를 만들지 않고 기기별 백필을 돌린다
+        old = NOW_MS - 3 * DAY_MS
+        self.fake.add("locations:history", [ev(NOW_MS - 1000)],
+                      [ev(NOW_MS - 1000), ev(NOW_MS - 500, device="m2", cap="motionSensor", attr="motion",
+                                              value="active", unit=None)])
+        self.fake.add("devices:history", [
+            ev(NOW_MS - 500, device="m2", cap="motionSensor", attr="motion", value="active", unit=None),
+            ev(old, device="m2", cap="motionSensor", attr="motion", value="inactive", unit=None)])
+        c = self.collector()
+        c.poll_history()
+        c.devices.append({"device_id": "m2", "capabilities": {"motionSensor"}, "label": "x", "name": "x",
+                          "room_id": None, "room_name": None, "location_id": LOC})
+        self.db.upsert_devices(c.devices)
+        c.poll_history()
+        self.assertEqual(len(self.fake.named("devices:history")), 1)
+        rows = self.db.conn.execute("SELECT ts_ms FROM readings WHERE device_id='m2' ORDER BY ts_ms").fetchall()
+        self.assertEqual([r[0] for r in rows], [old, NOW_MS - 500])  # 3일 전 값까지, 중복 없이
+        self.assertEqual(self.db.get_cursor("m2"), NOW_MS - 500)
+
     def test_detect_mode_uses_location_probe(self):
         self.fake.add("locations:history", [])
         c = self.collector()
